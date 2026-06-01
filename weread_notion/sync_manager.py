@@ -98,6 +98,16 @@ class SyncManager:
         if not removed_ids:
             return
 
+        # 安全检查：如果超过 30% 的书籍被检测为"移除"，很可能是 API 异常
+        # 此时跳过清理，防止误删
+        total_known = len(book_meta)
+        if total_known > 0 and len(removed_ids) > total_known * 0.3:
+            console.print(
+                f"\n[yellow]⚠ 检测到 {len(removed_ids)}/{total_known} 本书从书架消失（> 30%），"
+                f"可能为 API 异常，已跳过清理保护数据安全[/yellow]"
+            )
+            return
+
         console.print(f"\n[yellow]▶ 检测到 {len(removed_ids)} 本书已从书架移除，检查是否需要清理...[/yellow]")
 
         deleted_count = 0

@@ -3,14 +3,12 @@ Notion 同步模块
 负责在 Notion 中创建/更新数据库和页面
 """
 
-import base64
 import json
 import re
 import urllib.parse
 from datetime import datetime
 from typing import Optional
 
-import requests
 from notion_client import Client
 
 
@@ -95,49 +93,6 @@ def _image_block(url: str, caption: str = "") -> dict:
     if caption:
         block["image"]["caption"] = _rich(caption)
     return block
-
-
-def _fix_cover_url(weread_cover_url: str, timeout: int = 15) -> str:
-    """
-    微信读书封面 URL 是带签名的临时链接（约 10 分钟过期），
-    Notion 服务器无法直接抓取。此函数下载封面并上传到 Imgur 图床，
-    返回永久可用的 URL。
-
-    如果上传失败，回退到原始 URL（封面可能不显示，但不影响同步）。
-    """
-    if not weread_cover_url:
-        return ""
-
-    try:
-        # 1. 下载封面图片
-        img_resp = requests.get(weread_cover_url, timeout=timeout, allow_redirects=True)
-        img_resp.raise_for_status()
-        image_bytes = img_resp.content
-
-        if len(image_bytes) < 100:
-            return ""  # 无效图片
-
-        # 2. 上传到 Imgur（使用公开的匿名 Client-ID）
-        img_b64 = base64.b64encode(image_bytes).decode()
-        upload_resp = requests.post(
-            "https://api.imgur.com/3/image",
-            data={"image": img_b64, "type": "base64"},
-            headers={"Authorization": "Client-ID 546c25a59c58ad7"},
-            timeout=timeout,
-        )
-        upload_resp.raise_for_status()
-        result = upload_resp.json()
-
-        if result.get("success"):
-            permanent_url = result["data"]["link"]
-            if permanent_url.startswith("http"):
-                return permanent_url
-
-    except Exception:
-        pass
-
-    # 回退：返回原始 URL（可能不显示，但不抛异常）
-    return weread_cover_url
 
 
 def _chart_url(config: dict, width: int = 600, height: int = 400) -> str:
@@ -429,12 +384,10 @@ class NotionSyncer:
         if last_read_date:
             properties["最近阅读"] = {"date": {"start": last_read_date}}
 
-        # 封面（微信读书 URL 带签名过期，需要转换为永久链接）
+        # 封面（微信读书 URL 带签名过期，Notion 可能无法长久显示，但不影响同步）
         cover_prop = None
         if cover_url:
-            fixed_url = _fix_cover_url(cover_url)
-            if fixed_url:
-                cover_prop = {"type": "external", "external": {"url": fixed_url}}
+            cover_prop = {"type": "external", "external": {"url": cover_url}}
 
         existing_id = self._find_book_page(book_id)
         if existing_id:
