@@ -242,7 +242,7 @@ class NotionSyncer:
         # 封面
         cover_prop = None
         if cover_url:
-            cover_prop = {"external": {"url": cover_url}}
+            cover_prop = {"type": "external", "external": {"url": cover_url}}
 
         existing_id = self._find_book_page(book_id)
         if existing_id:
