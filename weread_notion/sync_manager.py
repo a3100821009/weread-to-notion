@@ -4,6 +4,7 @@
 
 import json
 import os
+import subprocess
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,54 @@ def load_state() -> dict:
 def save_state(state: dict):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def push_covers_to_github():
+    """将 covers/ 目录的变更提交并推送到 GitHub"""
+    covers_dir = Path("covers")
+    if not covers_dir.exists() or not any(covers_dir.iterdir()):
+        return  # 没有封面文件，跳过
+
+    try:
+        # 配置 git（GitHub Actions 环境）
+        subprocess.run(
+            ["git", "config", "user.name", "WeRead Sync Bot"],
+            capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "sync@weread-to-notion.local"],
+            capture_output=True,
+            timeout=10,
+        )
+        # 添加封面文件
+        subprocess.run(
+            ["git", "add", "covers/"],
+            capture_output=True,
+            timeout=10,
+        )
+        # 检查是否有变更
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return  # 无变更
+
+        subprocess.run(
+            ["git", "commit", "-m", "Update book covers"],
+            capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["git", "push"],
+            capture_output=True,
+            timeout=30,
+        )
+        console.print("[green]✓ 封面已推送到 GitHub[/green]")
+    except Exception as e:
+        console.print(f"[dim]封面推送跳过: {e}[/dim]")
 
 
 class SyncManager:
@@ -185,6 +234,10 @@ class SyncManager:
         if synced_books == 0:
             console.print("\n[yellow]⚠ 书架数据库中当前没有任何书籍记录。[/yellow]")
             console.print("  请检查 GitHub Actions 运行日志中的书架同步汇总，或确认 Notion 集成权限正常。")
+
+        # 4. 推送封面到 GitHub（使 raw.githubusercontent.com URL 生效）
+        console.print("\n[yellow]▶ 推送封面到 GitHub...[/yellow]")
+        push_covers_to_github()
 
         console.print("\n[bold green]✅ 同步完成！[/bold green]")
 

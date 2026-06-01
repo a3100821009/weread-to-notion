@@ -4,12 +4,19 @@ Notion 同步模块
 """
 
 import json
+import os
 import re
 import urllib.parse
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
+import requests
 from notion_client import Client
+
+# 封面存放目录
+COVERS_DIR = Path("covers")
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
 
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
@@ -81,6 +88,38 @@ def _divider() -> dict:
 def _bullet(text: str) -> dict:
     return {"object": "block", "type": "bulleted_list_item",
             "bulleted_list_item": {"rich_text": _rich(text)}}
+
+
+def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 15) -> str:
+    """
+    下载微信读书封面并保存到 covers/ 目录。
+    返回 GitHub raw URL（用于 Notion 封面）。
+    下载失败返回空字符串，不抛异常。
+    """
+    if not weread_cover_url:
+        return ""
+
+    cover_path = COVERS_DIR / f"{book_id}.jpg"
+
+    # 如果本地已有封面，直接返回 GitHub URL
+    if cover_path.exists():
+        return f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+
+    try:
+        COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        resp = requests.get(weread_cover_url, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+        image_bytes = resp.content
+
+        if len(image_bytes) < 100:
+            return ""
+
+        with open(cover_path, "wb") as f:
+            f.write(image_bytes)
+
+        return f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+    except Exception:
+        return ""
 
 
 def _image_block(url: str, caption: str = "") -> dict:
@@ -384,10 +423,12 @@ class NotionSyncer:
         if last_read_date:
             properties["最近阅读"] = {"date": {"start": last_read_date}}
 
-        # 封面（微信读书 URL 带签名过期，Notion 可能无法长久显示，但不影响同步）
+        # 封面：下载到 covers/，用 GitHub raw URL（永久有效）
         cover_prop = None
         if cover_url:
-            cover_prop = {"type": "external", "external": {"url": cover_url}}
+            fixed_url = _persist_cover(book_id, cover_url)
+            if fixed_url:
+                cover_prop = {"type": "external", "external": {"url": fixed_url}}
 
         existing_id = self._find_book_page(book_id)
         if existing_id:
