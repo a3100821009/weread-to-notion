@@ -307,28 +307,15 @@ class NotionSyncer:
         return None
 
     def _get_or_create_shelf_db(self) -> str:
-        """获取或创建书架数据库（内嵌在父页面中，不产生子页面）"""
-        # 先搜索已有数据库（兼容之前全页模式创建的情况）
+        """获取或创建书架数据库（作为父页面的子数据库）"""
+        # 先搜索已有数据库
         db_id = self._search_in_parent(self.SHELF_DB_TITLE, "database")
         if db_id:
             return db_id
 
-        # 通过 child_database 块在父页面内嵌创建（不产生子页面）
-        result = self.client.blocks.children.append(
-            block_id=self.parent_page_id,
-            children=[{
-                "object": "block",
-                "type": "child_database",
-                "child_database": {
-                    "title": self.SHELF_DB_TITLE,
-                },
-            }],
-        )
-        db_id = result["results"][0]["id"]
-
-        # 设置完整属性和图标
-        self.client.databases.update(
-            database_id=db_id,
+        db = self.client.databases.create(
+            parent={"type": "page_id", "page_id": self.parent_page_id},
+            title=[{"type": "text", "text": {"content": self.SHELF_DB_TITLE}}],
             icon={"type": "emoji", "emoji": "📚"},
             properties={
                 "书名": {"title": {}},
@@ -361,7 +348,7 @@ class NotionSyncer:
                 "封面": {"files": {}},
             },
         )
-        return db_id
+        return db["id"]
 
     def _get_or_create_stats_page(self) -> str:
         """获取或创建阅读统计页面"""
