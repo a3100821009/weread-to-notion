@@ -3,6 +3,7 @@ Notion 同步模块
 负责在 Notion 中创建/更新数据库和页面
 """
 
+import base64
 import json
 import re
 import urllib.parse
@@ -96,10 +97,10 @@ def _image_block(url: str, caption: str = "") -> dict:
     return block
 
 
-def _fix_cover_url(weread_cover_url: str, timeout: int = 10) -> str:
+def _fix_cover_url(weread_cover_url: str, timeout: int = 15) -> str:
     """
     微信读书封面 URL 是带签名的临时链接（约 10 分钟过期），
-    Notion 服务器无法直接抓取。此函数下载封面并上传到免费图床，
+    Notion 服务器无法直接抓取。此函数下载封面并上传到 Imgur 图床，
     返回永久可用的 URL。
 
     如果上传失败，回退到原始 URL（封面可能不显示，但不影响同步）。
@@ -116,17 +117,21 @@ def _fix_cover_url(weread_cover_url: str, timeout: int = 10) -> str:
         if len(image_bytes) < 100:
             return ""  # 无效图片
 
-        # 2. 上传到 0x0.st（免费匿名图床，无需 API Key）
+        # 2. 上传到 Imgur（使用公开的匿名 Client-ID）
+        img_b64 = base64.b64encode(image_bytes).decode()
         upload_resp = requests.post(
-            "https://0x0.st",
-            files={"file": ("cover.jpg", image_bytes, "image/jpeg")},
+            "https://api.imgur.com/3/image",
+            data={"image": img_b64, "type": "base64"},
+            headers={"Authorization": "Client-ID 546c25a59c58ad7"},
             timeout=timeout,
         )
         upload_resp.raise_for_status()
-        permanent_url = upload_resp.text.strip()
+        result = upload_resp.json()
 
-        if permanent_url.startswith("http"):
-            return permanent_url
+        if result.get("success"):
+            permanent_url = result["data"]["link"]
+            if permanent_url.startswith("http"):
+                return permanent_url
 
     except Exception:
         pass
