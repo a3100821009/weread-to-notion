@@ -153,6 +153,103 @@ class WeReadClient:
     # 便捷：一次性拉取某本书的完整笔记（划线 + 想法合并）
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # 热门划线 & 社交笔记
+    # -------------------------------------------------------------------------
+
+    def get_best_bookmarks(self, book_id: str, chapter_uid: int = 0) -> dict:
+        """获取热门划线（全书或单章），最多 20 条，含划线原文和人数"""
+        return self._call("/book/bestbookmarks", bookId=book_id, chapterUid=chapter_uid)
+
+    def get_read_reviews(
+        self, book_id: str, chapter_uid: int, ranges: list[dict]
+    ) -> dict:
+        """获取指定划线下的热门评论/想法"""
+        return self._call(
+            "/book/readreviews",
+            bookId=book_id,
+            chapterUid=chapter_uid,
+            reviews=ranges,
+        )
+
+    def get_book_social_notes(self, book_id: str) -> dict:
+        """
+        获取全书社交笔记数据，结构：
+        {
+            "chapters": {...},       # chapterUid -> {title, chapterIdx, wordCount}
+            "social": {...},         # chapterUid -> {highlights: [...], reviews: [...]}
+        }
+        """
+        # 获取章节目录（含字数）
+        chapter_data = self.get_book_chapters(book_id)
+        chapters_list = chapter_data.get("chapters", [])
+        chapters_map: dict[int, dict] = {}
+        for ch in chapters_list:
+            chapters_map[ch["chapterUid"]] = {
+                "title": ch.get("title", ""),
+                "chapterIdx": ch.get("chapterIdx", 0),
+                "wordCount": ch.get("wordCount", 0),
+            }
+
+        # 获取全书热门划线（按章节筛选）
+        social: dict[int, dict] = {}
+
+        try:
+            all_best = self.get_best_bookmarks(book_id, chapter_uid=0)
+            items = all_best.get("items", [])
+            best_chapters = all_best.get("chapters", [])
+
+            # 构建章节映射
+            best_ch_map: dict[int, dict] = {}
+            for ch in best_chapters:
+                best_ch_map[ch["chapterUid"]] = ch
+
+            # 按章节分组热门划线
+            for item in items:
+                cuid = item.get("chapterUid", 0)
+                if cuid not in social:
+                    social[cuid] = {"highlights": [], "reviews": []}
+                social[cuid]["highlights"].append(item)
+
+            # 对每个有热门划线的章节，获取划线下评论
+            for cuid, data in social.items():
+                ranges = []
+                for hl in data["highlights"]:
+                    rng = hl.get("range", "")
+                    if rng:
+                        ranges.append({"range": rng, "count": 5, "maxIdx": 0})
+                if ranges:
+                    try:
+                        rv_data = self.get_read_reviews(book_id, cuid, ranges)
+                        rv_list = rv_data.get("reviews", [])
+                        for rv_entry in rv_list:
+                            page_reviews = rv_entry.get("pageReviews", [])
+                            for pr in page_reviews:
+                                pr_range = rv_entry.get("range", "")
+                                if pr_range not in data:
+                                    data[pr_range] = []
+                                if isinstance(data.get(pr_range), list):
+                                    data["reviews"].append({
+                                        "range": pr_range,
+                                        "review": pr.get("review", {}),
+                                    })
+                    except Exception:
+                        pass  # 某些书可能没有评论功能
+
+        except Exception:
+            pass  # 热门划线不是必需功能
+
+        # 合并章节信息（包含没有热门划线的章节）
+        for cuid, info in chapters_map.items():
+            if cuid not in social:
+                social[cuid] = {"highlights": [], "reviews": []}
+            social[cuid].update(info)
+
+        return {
+            "chapters": chapters_map,
+            "social": social,
+        }
+
     def get_book_notes(self, book_id: str) -> dict:
         """
         返回某本书的完整笔记数据，结构：

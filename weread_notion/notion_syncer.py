@@ -3,7 +3,9 @@ Notion 同步模块
 负责在 Notion 中创建/更新数据库和页面
 """
 
+import json
 import re
+import urllib.parse
 from datetime import datetime
 from typing import Optional
 from notion_client import Client
@@ -53,6 +55,23 @@ def _callout(text: str, emoji: str = "💡") -> dict:
     return {"object": "block", "type": "callout",
             "callout": {"rich_text": _rich(text), "icon": {"type": "emoji", "emoji": emoji}}}
 
+def _callout_green(text: str) -> dict:
+    """绿色 callout — 自己的划线"""
+    return _callout(text, "✏️")
+
+def _callout_blue(text: str) -> dict:
+    """蓝色 callout — 热门划线"""
+    return _callout(text, "🔥")
+
+def _callout_discuss(text: str) -> dict:
+    """讨论 callout — 章节讨论"""
+    return _callout(text, "💬")
+
+def _heading_colored(text: str, color: str) -> dict:
+    """带颜色的 H3 标题"""
+    return {"object": "block", "type": "heading_3",
+            "heading_3": {"rich_text": _rich(text), "color": color}}
+
 
 def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
@@ -61,6 +80,131 @@ def _divider() -> dict:
 def _bullet(text: str) -> dict:
     return {"object": "block", "type": "bulleted_list_item",
             "bulleted_list_item": {"rich_text": _rich(text)}}
+
+
+def _image_block(url: str, caption: str = "") -> dict:
+    """生成 Notion 图片块（外部 URL）"""
+    block = {
+        "object": "block",
+        "type": "image",
+        "image": {"type": "external", "external": {"url": url}},
+    }
+    if caption:
+        block["image"]["caption"] = _rich(caption)
+    return block
+
+
+def _chart_url(config: dict, width: int = 600, height: int = 400) -> str:
+    """通过 QuickChart.io 生成图表图片 URL"""
+    # QuickChart 免费 API：https://quickchart.io/documentation/
+    encoded = urllib.parse.quote(json.dumps(config, ensure_ascii=False))
+    return f"https://quickchart.io/chart?c={encoded}&w={width}&h={height}"
+
+
+# ── 图表生成器 ────────────────────────────────────────────────────────────────
+
+def _build_hourly_chart(prefer_time: list[int], total_sec: int) -> str:
+    """阅读时段分布柱状图（preferTime 从 6:00 开始，24 个元素）"""
+    if not prefer_time or len(prefer_time) != 24:
+        return ""
+
+    hours = []
+    minutes_data = []
+    for idx, sec in enumerate(prefer_time):
+        hour = (idx + 6) % 24
+        hours.append(f"{hour:02d}:00")
+        minutes_data.append(round(sec / 60, 1))
+
+    config = {
+        "type": "bar",
+        "data": {
+            "labels": hours,
+            "datasets": [{
+                "label": "阅读时长（分钟）",
+                "data": minutes_data,
+                "backgroundColor": "#4A90D9",
+                "borderRadius": 4,
+            }],
+        },
+        "options": {
+            "plugins": {
+                "title": {"display": True, "text": "阅读时段分布", "font": {"size": 16}},
+                "legend": {"display": False},
+            },
+            "scales": {
+                "y": {"title": {"display": True, "text": "分钟"}},
+            },
+        },
+    }
+    return _chart_url(config, width=680, height=380)
+
+
+def _build_category_chart(prefer_category: list[dict]) -> str:
+    """偏好分类饼图"""
+    if not prefer_category:
+        return ""
+
+    cats = prefer_category[:7]  # 最多 7 类
+    labels = [c.get("categoryTitle", "其他") for c in cats]
+    data = [round(c.get("readingTime", 0) / 3600, 1) for c in cats]  # 转小时
+
+    colors = ["#4A90D9", "#7B68EE", "#E8913A", "#50C878", "#E85D75", "#20B2AA", "#DAA520"]
+
+    config = {
+        "type": "doughnut",
+        "data": {
+            "labels": labels,
+            "datasets": [{
+                "label": "阅读时长（小时）",
+                "data": data,
+                "backgroundColor": colors[:len(labels)],
+                "borderWidth": 2,
+                "borderColor": "#fff",
+            }],
+        },
+        "options": {
+            "plugins": {
+                "title": {"display": True, "text": "偏好分类（按阅读时长）", "font": {"size": 16}},
+            },
+        },
+    }
+    return _chart_url(config, width=500, height=400)
+
+
+def _build_author_chart(prefer_author: list[dict]) -> str:
+    """偏好作者横向柱状图"""
+    if not prefer_author:
+        return ""
+
+    authors = prefer_author[:8]
+    # 反转顺序（QuickChart 横向柱状图从上往下）
+    authors = list(reversed(authors))
+    labels = [a.get("name", "") for a in authors]
+    counts = [a.get("count", 0) for a in authors]
+
+    config = {
+        "type": "bar",
+        "data": {
+            "labels": labels,
+            "datasets": [{
+                "label": "阅读本数",
+                "data": counts,
+                "backgroundColor": "#E8913A",
+                "borderRadius": 4,
+            }],
+        },
+        "options": {
+            "indexAxis": "y",
+            "plugins": {
+                "title": {"display": True, "text": "偏好作者 TOP8", "font": {"size": 16}},
+                "legend": {"display": False},
+            },
+            "scales": {
+                "x": {"title": {"display": True, "text": "本数"}, "ticks": {"stepSize": 1}},
+            },
+        },
+    }
+    return _chart_url(config, width=600, height=380)
 
 
 # ── NotionSyncer ─────────────────────────────────────────────────────────────
@@ -263,45 +407,58 @@ class NotionSyncer:
             self._book_pages[book_id] = notion_id  # 记录映射
             return notion_id
 
+    def delete_book_page(self, notion_page_id: str, book_id: str = "") -> bool:
+        """
+        从 Notion 中删除（归档）一本书的页面
+        同时从本地缓存中移除映射
+        """
+        try:
+            # 先清空页面内容（避免孤儿块）
+            self._clear_page_content(notion_page_id)
+            # 归档页面（Notion 的软删除）
+            self.client.pages.update(
+                page_id=notion_page_id,
+                archived=True,
+            )
+            if book_id and book_id in self._book_pages:
+                del self._book_pages[book_id]
+            return True
+        except Exception:
+            # 页面可能已被手动删除，清理本地缓存即可
+            if book_id and book_id in self._book_pages:
+                del self._book_pages[book_id]
+            return False
+
     # ── 笔记同步（划线 + 想法写入书籍页面内容） ─────────────────────────────
 
-    def sync_book_notes(self, page_id: str, notes_data: dict, book_title: str = ""):
+    def sync_book_notes(
+        self,
+        page_id: str,
+        notes_data: dict,
+        social_data: Optional[dict] = None,
+        book_title: str = "",
+    ):
         """
-        将划线和想法写入书籍页面（清空旧内容后重写）
-        notes_data 结构来自 WeReadClient.get_book_notes()
+        将笔记写入书籍页面，每章四个模块：
+
+        📝 章节摘要  — 字数 + 热门划线精要
+        🟢 我的划线 & 想法  — 绿色 callout
+        🔵 热门划线 & 想法  — 蓝色 callout
+        💬 章节讨论  — 热门评论
         """
         highlights = notes_data.get("highlights", [])
         chapters_map = notes_data.get("chapters", {})
         reviews = notes_data.get("reviews", [])
 
-        if not highlights and not reviews:
-            return
+        social = (social_data or {}).get("social", {})
 
-        # 先清除旧块
-        self._clear_page_content(page_id)
-
-        blocks = []
-
-        # 标题
-        blocks.append(_heading2(f"{'《' + book_title + '》 ' if book_title else ''}笔记"))
-        blocks.append(_paragraph(f"最后同步：{datetime.now().strftime('%Y-%m-%d %H:%M')}"))
-        blocks.append(_divider())
-
-        # 按章节分组划线
+        # 自己划线按章节分组
         from collections import defaultdict
-        chapter_highlights: dict = defaultdict(list)
+        ch_my_hl: dict = defaultdict(list)
         for hl in highlights:
-            cuid = hl.get("chapterUid", 0)
-            chapter_highlights[cuid].append(hl)
+            ch_my_hl[hl.get("chapterUid", 0)].append(hl)
 
-        # 按章节序号排序
-        def chapter_sort_key(cuid):
-            ch = chapters_map.get(cuid, {})
-            return ch.get("chapterIdx", 9999)
-
-        sorted_chapters = sorted(chapter_highlights.keys(), key=chapter_sort_key)
-
-        # 构建 reviewId -> review 映射，用于关联划线想法
+        # 自己想法按抽象关联
         review_by_abstract: dict = {}
         standalone_reviews = []
         for rv_item in reviews:
@@ -312,50 +469,192 @@ class NotionSyncer:
             else:
                 standalone_reviews.append(rv)
 
-        for cuid in sorted_chapters:
+        # 合并所有有内容的章节
+        all_cuids = set(ch_my_hl.keys())
+        for cuid, s in social.items():
+            if s.get("highlights") or s.get("reviews"):
+                all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
+
+        if not all_cuids and not standalone_reviews:
+            return
+
+        self._clear_page_content(page_id)
+
+        blocks = []
+        blocks.append(_heading2(f"{'《' + book_title + '》 ' if book_title else ''}阅读笔记"))
+        blocks.append(_paragraph(f"最后同步：{datetime.now().strftime('%Y-%m-%d %H:%M')}"))
+        blocks.append(_divider())
+
+        def _sort_key(cuid):
+            ch = chapters_map.get(cuid) or social.get(cuid) or {}
+            return ch.get("chapterIdx", 9999)
+
+        for cuid in sorted(all_cuids, key=_sort_key):
             ch_info = chapters_map.get(cuid, {})
-            ch_title = ch_info.get("title", f"章节 {cuid}")
+            soc_info = social.get(cuid, {})
+            ch_title = (
+                ch_info.get("title")
+                or soc_info.get("title")
+                or f"章节 {cuid}"
+            )
+            word_count = ch_info.get("wordCount") or soc_info.get("wordCount", 0)
+
+            # ═══════════════════════════════════
+            # 章节标题
+            # ═══════════════════════════════════
             blocks.append(_heading3(f"📑 {ch_title}"))
 
-            for hl in chapter_highlights[cuid]:
-                mark_text = hl.get("markText", "")
-                create_ts = hl.get("createTime", 0)
-                date_str = datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d") if create_ts else ""
+            # ═══════════════════════════════════
+            # 模块一：章节摘要
+            # ═══════════════════════════════════
+            blocks.append(_heading_colored("📝 章节摘要", "gray"))
 
-                # 划线原文
-                blocks.append(_quote(mark_text))
+            summary_parts = []
+            if word_count > 0:
+                summary_parts.append(f"本章约 {word_count:,} 字")
 
-                # 关联想法
-                linked_reviews = review_by_abstract.get(mark_text, [])
-                for lrv in linked_reviews:
-                    content = lrv.get("content", "")
-                    if content:
-                        blocks.append(_callout(f"💭 {content}", "💭"))
+            # 热门划线精要（取前 3 条作为摘要）
+            soc_highlights = soc_info.get("highlights", [])
+            if soc_highlights:
+                top = sorted(soc_highlights, key=lambda h: h.get("totalCount", 0), reverse=True)[:3]
+                summary_parts.append(f"共 {len(soc_highlights)} 条热门划线")
 
-                if date_str:
-                    blocks.append(_paragraph(f"  ↑ {date_str}"))
+            if summary_parts:
+                blocks.append(_paragraph(" · ".join(summary_parts)))
+
+            if soc_highlights:
+                top3 = sorted(soc_highlights, key=lambda h: h.get("totalCount", 0), reverse=True)[:3]
+                blocks.append(_callout(
+                    "本章精要：\n\n"
+                    + "\n".join(
+                        f"▸ 「{h.get('markText', '')[:120]}{'...' if len(h.get('markText', '')) > 120 else ''}」"
+                        f"  — {h.get('totalCount', 0)}人划线"
+                        for h in top3
+                    ),
+                    "📌"
+                ))
 
             blocks.append(_divider())
 
-        # 整本书评/章节点评（无关联划线的想法）
+            # ═══════════════════════════════════
+            # 模块二：我的划线 & 想法
+            # ═══════════════════════════════════
+            my_highlights = ch_my_hl.get(cuid, [])
+            blocks.append(_heading_colored(f"🟢 我的划线 & 想法（{len(my_highlights)} 条）", "green"))
+
+            if my_highlights:
+                for hl in my_highlights:
+                    mark_text = hl.get("markText", "")
+                    create_ts = hl.get("createTime", 0)
+                    date_str = (
+                        datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d")
+                        if create_ts else ""
+                    )
+                    blocks.append(_callout_green(f"「{mark_text}」"))
+
+                    # 关联我的想法
+                    for lrv in review_by_abstract.get(mark_text, []):
+                        content = lrv.get("content", "")
+                        if content:
+                            blocks.append(_callout(f"💭 {content}", "💭"))
+
+                    if date_str:
+                        blocks.append(_paragraph(f"  🕐 {date_str}"))
+            else:
+                blocks.append(_paragraph("（暂无划线）"))
+
+            blocks.append(_divider())
+
+            # ═══════════════════════════════════
+            # 模块三：热门划线 & 想法
+            # ═══════════════════════════════════
+            blocks.append(_heading_colored(f"🔵 热门划线 & 想法（{len(soc_highlights)} 条）", "blue"))
+
+            if soc_highlights:
+                # 构建 range → reviews 映射
+                soc_reviews = soc_info.get("reviews", [])
+                reviews_by_range: dict = defaultdict(list)
+                for rv in soc_reviews:
+                    rng = rv.get("range", "")
+                    reviews_by_range[rng].append(rv.get("review", {}))
+
+                for sh in soc_highlights:
+                    mark_text = sh.get("markText", "")
+                    total_count = sh.get("totalCount", 0)
+
+                    blocks.append(_callout_blue(
+                        f"「{mark_text}」\n\n📊 {total_count} 人划线"
+                    ))
+
+                    # 关联热门想法
+                    rng = sh.get("range", "")
+                    linked_discuss = reviews_by_range.get(rng, [])
+                    for lrv in linked_discuss[:3]:  # 每条划线最多显示 3 条热门想法
+                        content = lrv.get("content", "")
+                        author = lrv.get("author", {}) or {}
+                        author_name = author.get("name", "匿名读者")
+                        if content:
+                            blocks.append(_callout_discuss(
+                                f"{author_name}：{content[:300]}"
+                            ))
+            else:
+                blocks.append(_paragraph("（暂无热门划线）"))
+
+            blocks.append(_divider())
+
+            # ═══════════════════════════════════
+            # 模块四：章节讨论
+            # ═══════════════════════════════════
+            soc_reviews = soc_info.get("reviews", [])
+            blocks.append(_heading_colored(f"💬 章节讨论（{len(soc_reviews)} 条）", "brown"))
+
+            if soc_reviews:
+                shown = 0
+                for rv in soc_reviews:
+                    review_obj = rv.get("review", {})
+                    content = review_obj.get("content", "")
+                    author = review_obj.get("author", {}) or {}
+                    author_name = author.get("name", "匿名读者")
+                    create_ts = review_obj.get("createTime", 0)
+                    date_str = (
+                        datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d")
+                        if create_ts else ""
+                    )
+                    if content and len(content.strip()) > 3:
+                        blocks.append(_callout_discuss(
+                            f"**{author_name}**{' · ' + date_str if date_str else ''}\n{content[:400]}"
+                        ))
+                        shown += 1
+                        if shown >= 5:
+                            break
+                if shown == 0:
+                    blocks.append(_paragraph("（暂无优质讨论）"))
+            else:
+                blocks.append(_paragraph("（暂无章节讨论）"))
+
+            blocks.append(_divider())
+
+        # ═══════════════════════════════════
+        # 书末：整本书评
+        # ═══════════════════════════════════
         if standalone_reviews:
-            blocks.append(_heading3("📝 书评与点评"))
+            blocks.append(_heading2("📝 书评"))
             for rv in standalone_reviews:
                 content = rv.get("content", "")
                 chapter_name = rv.get("chapterName", "")
                 star = rv.get("star", -1)
                 create_ts = rv.get("createTime", 0)
-                date_str = datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d") if create_ts else ""
-
+                date_str = (
+                    datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d")
+                    if create_ts else ""
+                )
                 label = f"【{chapter_name}】" if chapter_name else "【整本书评】"
                 rating_str = f" ⭐{star}/5" if star and star > 0 else ""
                 blocks.append(_callout(f"{label}{rating_str}\n{content}", "📝"))
                 if date_str:
-                    blocks.append(_paragraph(f"  ↑ {date_str}"))
-
+                    blocks.append(_paragraph(f"🕐 {date_str}"))
             blocks.append(_divider())
 
-        # Notion API 每次最多追加 100 个块
         self._append_blocks_chunked(page_id, blocks)
 
     def _clear_page_content(self, page_id: str):
@@ -375,7 +674,7 @@ class NotionSyncer:
     # ── 阅读统计同步 ────────────────────────────────────────────────────────
 
     def sync_stats(self, stats: dict, mode_label: str = "总计"):
-        """将阅读统计数据写入统计页面"""
+        """将阅读统计数据写入统计页面（含图表可视化）"""
         from weread_notion.weread_client import WeReadClient as WRC
 
         page_id = self._stats_page_id
@@ -404,37 +703,55 @@ class NotionSyncer:
             for k, v in stat_map.items():
                 blocks.append(_bullet(f"{k}：{v}"))
 
-        # 偏好分类
+        # ── 图表：阅读时段分布 ──
+        prefer_time_arr = stats.get("preferTime", [])
+        prefer_time_word = stats.get("preferTimeWord", "")
+        if prefer_time_arr:
+            blocks.append(_divider())
+            blocks.append(_heading3("🕐 阅读时段"))
+
+            # 生成时段分布图表
+            hourly_url = _build_hourly_chart(prefer_time_arr, total_sec)
+            if hourly_url:
+                blocks.append(_image_block(hourly_url, "阅读时段分布"))
+
+            if prefer_time_word:
+                blocks.append(_callout(prefer_time_word, "🌙"))
+
+            hours_detail = []
+            for idx, sec in enumerate(prefer_time_arr):
+                hour = (idx + 6) % 24
+                if sec > 0:
+                    hours_detail.append(f"{hour:02d}:00 — {WRC.seconds_to_hm(sec)}")
+            if hours_detail:
+                blocks.append(_paragraph("  " + " | ".join(hours_detail[:5])))
+
+        # ── 图表：偏好分类 ──
         prefer_cat = stats.get("preferCategory", [])
         if prefer_cat:
+            blocks.append(_divider())
             blocks.append(_heading3("📂 偏好分类"))
+
+            cat_url = _build_category_chart(prefer_cat)
+            if cat_url:
+                blocks.append(_image_block(cat_url, "偏好分类（按阅读时长）"))
+
             for cat in prefer_cat[:8]:
                 cat_title = cat.get("categoryTitle", "")
                 reading_time = WRC.seconds_to_hm(cat.get("readingTime", 0))
                 count = cat.get("readingCount", 0)
                 blocks.append(_bullet(f"{cat_title}：{reading_time}（{count} 本）"))
 
-        # 偏好时段
-        prefer_time_word = stats.get("preferTimeWord", "")
-        prefer_time_arr = stats.get("preferTime", [])
-        if prefer_time_word:
-            blocks.append(_heading3("🕐 阅读时段"))
-            blocks.append(_callout(prefer_time_word, "🌙"))
-            if prefer_time_arr:
-                # preferTime 从 6:00 开始
-                hours = []
-                for idx, sec in enumerate(prefer_time_arr):
-                    hour = (idx + 6) % 24
-                    if sec > 0:
-                        hours.append(f"{hour:02d}:00 — {WRC.seconds_to_hm(sec)}")
-                if hours:
-                    for h in hours[:5]:  # 显示前 5 个高峰时段
-                        blocks.append(_bullet(h))
-
-        # 偏好作者
+        # ── 图表：偏好作者 ──
         prefer_authors = stats.get("preferAuthor", [])
         if prefer_authors:
+            blocks.append(_divider())
             blocks.append(_heading3("✍️ 偏好作者"))
+
+            author_url = _build_author_chart(prefer_authors)
+            if author_url:
+                blocks.append(_image_block(author_url, "偏好作者 TOP8"))
+
             for au in prefer_authors[:5]:
                 name = au.get("name", "")
                 count = au.get("count", 0)
@@ -444,6 +761,7 @@ class NotionSyncer:
         # 最多阅读书籍
         read_longest = stats.get("readLongest", [])
         if read_longest:
+            blocks.append(_divider())
             blocks.append(_heading3("🏆 阅读最多"))
             for item in read_longest:
                 bk = item.get("book") or item.get("albumInfo") or {}
