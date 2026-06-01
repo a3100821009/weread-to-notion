@@ -464,13 +464,22 @@ class NotionSyncer:
             return False
 
     def update_book_cover(self, notion_page_id: str, github_cover_url: str) -> bool:
-        """更新单本书的封面（外部 URL）"""
+        """更新单本书的页面封面 + 数据库"封面" files 属性"""
         if not github_cover_url:
             return False
         try:
             self.client.pages.update(
                 page_id=notion_page_id,
                 cover={"type": "external", "external": {"url": github_cover_url}},
+                properties={
+                    "封面": {
+                        "files": [{
+                            "name": "cover.jpg",
+                            "type": "external",
+                            "external": {"url": github_cover_url},
+                        }]
+                    }
+                },
             )
             return True
         except Exception:
