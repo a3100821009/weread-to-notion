@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import traceback
+from concurrent.futures import ThreadPoolExecutor, wait, Future
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -92,7 +93,7 @@ class SyncManager:
         sync_highlights: bool = True,
         sync_reviews: bool = True,
         sync_stats: bool = True,
-        request_delay: float = 0.3,
+        request_delay: float = 0.15,
         incremental: bool = True,
     ):
         self.wr = WeReadClient(weread_key, request_delay)
@@ -212,13 +213,12 @@ class SyncManager:
         self.ns.setup()
         console.print("[green]✓ Notion 结构就绪[/green]")
 
-        # 1. 同步书架
+        # 1. 同步书架 + 后台并发下载封面
+        self._cover_pool = ThreadPoolExecutor(max_workers=10)
         self._sync_shelf()
 
         # 2. 检测并清理书架中已移除的低阅读时间书籍
-        #    必须在 _sync_shelf 之后，因为它收集了 current_book_ids
-        #    但不能在 _sync_shelf 内部，因为需要先完成所有书籍的同步
-        #    self._cleanup_removed_books 已在 _sync_shelf 末尾调用
+        #    已在 _sync_shelf 末尾调用 _cleanup_removed_books
 
         # 3. 同步阅读统计
         if self.sync_stats:
@@ -235,9 +235,8 @@ class SyncManager:
             console.print("\n[yellow]⚠ 书架数据库中当前没有任何书籍记录。[/yellow]")
             console.print("  请检查 GitHub Actions 运行日志中的书架同步汇总，或确认 Notion 集成权限正常。")
 
-        # 4. 推送封面到 GitHub（使 raw.githubusercontent.com URL 生效）
-        console.print("\n[yellow]▶ 推送封面到 GitHub...[/yellow]")
-        push_covers_to_github()
+        # 4. 等待封面下载完成 → 推送 GitHub → 更新 Notion
+        self._sync_all_covers()
 
         console.print("\n[bold green]✅ 同步完成！[/bold green]")
 
@@ -289,6 +288,18 @@ class SyncManager:
                 last_read_ts = book_shelf.get("readUpdateTime", 0)
                 state_key = f"book_{book_id}"
                 if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
+                    # 增量跳过的书也存 coverUrl（从书架数据提取）
+                    existing_meta = self.state.get("book_meta", {}).get(book_id, {})
+                    shelf_cover = book_shelf.get("cover", "")
+                    cover_url = shelf_cover or existing_meta.get("coverUrl", "")
+                    self.state.setdefault("book_meta", {})[book_id] = {
+                        "title": book_title,
+                        "readingTime": existing_meta.get("readingTime", 0),
+                        "coverUrl": cover_url,
+                        "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
+                    }
+                    if cover_url:
+                        self._cover_pool.submit(self._download_one_cover, book_id, cover_url)
                     skip_count += 1
                     progress.advance(task)
                     continue
@@ -299,11 +310,17 @@ class SyncManager:
                     progress_info = self.wr.get_book_progress(book_id)
                     nb_info = notebook_map.get(book_id)
 
+                    # 立即提交封面下载到后台（URL 新鲜）
+                    cover_url = book_info.get("cover", "")
+                    if cover_url:
+                        self._cover_pool.submit(self._download_one_cover, book_id, cover_url)
+
                     # 提取并存储阅读时间
                     reading_time = self._extract_reading_time(book_shelf, progress_info)
                     self.state.setdefault("book_meta", {})[book_id] = {
                         "title": book_title,
                         "readingTime": reading_time,
+                        "coverUrl": cover_url,
                         "lastSynced": datetime.now().isoformat(),
                     }
 
@@ -354,6 +371,14 @@ class SyncManager:
         # 清理已从书架移除的低阅读时间书籍
         self._cleanup_removed_books(current_book_ids)
 
+    @staticmethod
+    def _download_one_cover(book_id: str, cover_url: str):
+        """下载单本书封面到 covers/ 目录（在后台线程中执行）"""
+        if not cover_url:
+            return
+        from weread_notion.notion_syncer import _persist_cover
+        _persist_cover(book_id, cover_url)
+
     def _sync_stats(self):
         console.print("\n[yellow]▶ 同步阅读统计...[/yellow]")
         try:
@@ -362,3 +387,24 @@ class SyncManager:
             console.print("[green]✓ 阅读统计同步完成[/green]")
         except Exception as e:
             console.print(f"[red]✗ 阅读统计同步失败：{e}[/red]")
+
+    def _sync_all_covers(self):
+        """等待后台封面下载 → 推送 GitHub → 更新 Notion（不影响书架数据）"""
+        # 等待后台封面下载线程全部完成
+        console.print("\n[yellow]▶ 等待封面下载...[/yellow]")
+        self._cover_pool.shutdown(wait=True)
+
+        covers_dir = Path("covers")
+        if not covers_dir.exists() or not any(covers_dir.iterdir()):
+            console.print("[dim]  无封面文件，跳过[/dim]")
+            return
+
+        # 推送到 GitHub
+        push_covers_to_github()
+
+        # 并发更新 Notion 页面封面
+        updated = self.ns.update_page_covers()
+        if updated > 0:
+            console.print(f"  [green]✓ Notion 封面已更新 {updated} 本[/green]")
+        else:
+            console.print("  [dim]封面均就绪，无需更新[/dim]")

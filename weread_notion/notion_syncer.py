@@ -7,6 +7,7 @@ import json
 import os
 import re
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -90,7 +91,7 @@ def _bullet(text: str) -> dict:
             "bulleted_list_item": {"rich_text": _rich(text)}}
 
 
-def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 15) -> str:
+def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str:
     """
     下载微信读书封面并保存到 covers/ 目录。
     返回 GitHub raw URL（用于 Notion 封面）。
@@ -423,26 +424,17 @@ class NotionSyncer:
         if last_read_date:
             properties["最近阅读"] = {"date": {"start": last_read_date}}
 
-        # 封面：下载到 covers/，用 GitHub raw URL（永久有效）
-        cover_prop = None
-        if cover_url:
-            fixed_url = _persist_cover(book_id, cover_url)
-            if fixed_url:
-                cover_prop = {"type": "external", "external": {"url": fixed_url}}
-
         existing_id = self._find_book_page(book_id)
         if existing_id:
             self.client.pages.update(
                 page_id=existing_id,
                 properties=properties,
-                cover=cover_prop,
             )
             return existing_id
         else:
             page = self.client.pages.create(
                 parent={"database_id": self._shelf_db_id},
                 properties=properties,
-                cover=cover_prop,
                 icon={"type": "emoji", "emoji": "📖"},
             )
             notion_id = page["id"]
@@ -470,6 +462,73 @@ class NotionSyncer:
             if book_id and book_id in self._book_pages:
                 del self._book_pages[book_id]
             return False
+
+    def update_book_cover(self, notion_page_id: str, github_cover_url: str) -> bool:
+        """更新单本书的封面（外部 URL）"""
+        if not github_cover_url:
+            return False
+        try:
+            self.client.pages.update(
+                page_id=notion_page_id,
+                cover={"type": "external", "external": {"url": github_cover_url}},
+            )
+            return True
+        except Exception:
+            return False
+
+    def batch_sync_covers(self, book_covers: dict[str, str], max_workers: int = 10) -> int:
+        """
+        并发批量下载封面到 covers/ 目录。
+        book_covers: {book_id: weread_cover_url}
+        max_workers: 并发数（默认 10，避免 CDN 限流）
+        返回下载成功数
+        """
+        downloaded = 0
+
+        def _download(bid: str, url: str) -> bool:
+            return bool(_persist_cover(bid, url))
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_download, bid, url): bid
+                for bid, url in book_covers.items()
+            }
+            for future in as_completed(futures):
+                if future.result():
+                    downloaded += 1
+
+        return downloaded
+
+    def update_page_covers(self, max_workers: int = 10) -> int:
+        """
+        并发更新 Notion 页面封面（读取 covers/ 本地文件，构建 GitHub raw URL）。
+        返回更新成功数。
+        """
+        updated = 0
+        tasks: list[tuple[str, str]] = []
+
+        for book_id, page_id in self._book_pages.items():
+            cover_path = COVERS_DIR / f"{book_id}.jpg"
+            if cover_path.exists():
+                url = f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+                tasks.append((book_id, page_id, url))
+
+        if not tasks:
+            return 0
+
+        def _update(page_id: str, url: str) -> bool:
+            return self.update_book_cover(page_id, url)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_update, pid, url): bid
+                for bid, pid, url in tasks
+            }
+            for future in as_completed(futures):
+                if future.result():
+                    updated += 1
+
+        return updated
 
     # ── 笔记同步（划线 + 想法写入书籍页面内容） ─────────────────────────────
 
