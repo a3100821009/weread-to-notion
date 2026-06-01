@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import traceback
-from concurrent.futures import ThreadPoolExecutor, wait, Future
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -46,42 +45,42 @@ def push_covers_to_github():
         # 配置 git（GitHub Actions 环境）
         subprocess.run(
             ["git", "config", "user.name", "WeRead Sync Bot"],
-            capture_output=True,
-            timeout=10,
+            capture_output=True, timeout=10,
         )
         subprocess.run(
             ["git", "config", "user.email", "sync@weread-to-notion.local"],
-            capture_output=True,
-            timeout=10,
+            capture_output=True, timeout=10,
         )
-        # 添加封面文件
+        # 添加封面文件 + 同步状态（持久化 book_pages 映射）
         subprocess.run(
-            ["git", "add", "covers/"],
-            capture_output=True,
-            timeout=10,
+            ["git", "add", "covers/", "sync_state.json"],
+            capture_output=True, timeout=10,
         )
         # 检查是否有变更
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
-            capture_output=True,
-            timeout=10,
+            capture_output=True, timeout=10,
         )
         if result.returncode == 0:
             return  # 无变更
 
+        # 提交并推送到 GitHub（使用 HEAD:branch 绕过 detached HEAD 限制）
+        branch = os.environ.get("GITHUB_REF_NAME", "main")
         subprocess.run(
-            ["git", "commit", "-m", "Update book covers"],
-            capture_output=True,
-            timeout=10,
+            ["git", "commit", "-m", "Update book covers & sync state"],
+            capture_output=True, timeout=10,
         )
-        subprocess.run(
-            ["git", "push"],
-            capture_output=True,
-            timeout=30,
+        push_result = subprocess.run(
+            ["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+            capture_output=True, timeout=60,
         )
-        console.print("[green]✓ 封面已推送到 GitHub[/green]")
+        if push_result.returncode != 0:
+            stderr = push_result.stderr.decode()[:300]
+            console.print(f"[red]✗ 封面推送失败: {stderr}[/red]")
+            return
+        console.print(f"[green]✓ 封面 + 状态已推送到 GitHub ({branch})[/green]")
     except Exception as e:
-        console.print(f"[dim]封面推送跳过: {e}[/dim]")
+        console.print(f"[dim]封面推送异常: {e}[/dim]")
 
 
 class SyncManager:
@@ -213,8 +212,7 @@ class SyncManager:
         self.ns.setup()
         console.print("[green]✓ Notion 结构就绪[/green]")
 
-        # 1. 同步书架 + 后台并发下载封面
-        self._cover_pool = ThreadPoolExecutor(max_workers=10)
+        # 1. 同步书架（不再封面下载，统一在 _sync_all_covers 处理）
         self._sync_shelf()
 
         # 2. 检测并清理书架中已移除的低阅读时间书籍
@@ -296,10 +294,10 @@ class SyncManager:
                         "title": book_title,
                         "readingTime": existing_meta.get("readingTime", 0),
                         "coverUrl": cover_url,
+                        "noteCount": existing_meta.get("noteCount", 0),
+                        "reviewCount": existing_meta.get("reviewCount", 0),
                         "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
                     }
-                    if cover_url:
-                        self._cover_pool.submit(self._download_one_cover, book_id, cover_url)
                     skip_count += 1
                     progress.advance(task)
                     continue
@@ -310,30 +308,30 @@ class SyncManager:
                     progress_info = self.wr.get_book_progress(book_id)
                     nb_info = notebook_map.get(book_id)
 
-                    # 立即提交封面下载到后台（URL 新鲜）
+                    # 提取封面 URL（存到 book_meta 供后续下载用）
                     cover_url = book_info.get("cover", "")
-                    if cover_url:
-                        self._cover_pool.submit(self._download_one_cover, book_id, cover_url)
 
                     # 提取并存储阅读时间
                     reading_time = self._extract_reading_time(book_shelf, progress_info)
+
+                    note_count = nb_info.get("noteCount", 0) if nb_info else 0
+                    review_count = nb_info.get("reviewCount", 0) if nb_info else 0
+
                     self.state.setdefault("book_meta", {})[book_id] = {
                         "title": book_title,
                         "readingTime": reading_time,
                         "coverUrl": cover_url,
+                        "noteCount": note_count,
+                        "reviewCount": review_count,
                         "lastSynced": datetime.now().isoformat(),
                     }
 
                     # 同步到 Notion 书架数据库
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info)
 
-                    # 同步划线 + 想法（自己的 + 社交笔记）
+                    # 同步划线 + 想法：只要本书有更新就重新同步（先清空再重写）
                     if (self.sync_highlights or self.sync_reviews) and nb_info:
-                        has_notes = (
-                            nb_info.get("noteCount", 0) > 0
-                            or nb_info.get("reviewCount", 0) > 0
-                        )
-                        if has_notes:
+                        if note_count > 0 or review_count > 0:
                             notes = self.wr.get_book_notes(book_id)
 
                             # 同步获取社交笔记（热门划线 + 评论）
@@ -371,14 +369,6 @@ class SyncManager:
         # 清理已从书架移除的低阅读时间书籍
         self._cleanup_removed_books(current_book_ids)
 
-    @staticmethod
-    def _download_one_cover(book_id: str, cover_url: str):
-        """下载单本书封面到 covers/ 目录（在后台线程中执行）"""
-        if not cover_url:
-            return
-        from weread_notion.notion_syncer import _persist_cover
-        _persist_cover(book_id, cover_url)
-
     def _sync_stats(self):
         console.print("\n[yellow]▶ 同步阅读统计...[/yellow]")
         try:
@@ -389,20 +379,58 @@ class SyncManager:
             console.print(f"[red]✗ 阅读统计同步失败：{e}[/red]")
 
     def _sync_all_covers(self):
-        """等待后台封面下载 → 推送 GitHub → 更新 Notion（不影响书架数据）"""
-        # 等待后台封面下载线程全部完成
-        console.print("\n[yellow]▶ 等待封面下载...[/yellow]")
-        self._cover_pool.shutdown(wait=True)
+        """从 book_meta 读取 coverUrl，逐一下载封面 → 推送 GitHub → 更新 Notion"""
+        from weread_notion.notion_syncer import _persist_cover
 
-        covers_dir = Path("covers")
-        if not covers_dir.exists() or not any(covers_dir.iterdir()):
-            console.print("[dim]  无封面文件，跳过[/dim]")
+        book_meta = self.state.get("book_meta", {})
+        if not book_meta:
+            console.print("\n[dim]▶ 封面：无书籍记录，跳过[/dim]")
             return
 
-        # 推送到 GitHub
-        push_covers_to_github()
+        # 收集所有需要下载的封面
+        pending: dict[str, str] = {}
+        have = 0
+        for book_id, meta in book_meta.items():
+            url = meta.get("coverUrl", "")
+            if not url:
+                continue
+            cover_path = Path("covers") / f"{book_id}.jpg"
+            if cover_path.exists():
+                have += 1
+                continue
+            pending[book_id] = url
 
-        # 并发更新 Notion 页面封面
+        console.print(f"\n[yellow]▶ 下载封面...[/yellow] (需下载 [cyan]{len(pending)}[/cyan] | 已有 [dim]{have}[/dim])")
+
+        if not pending:
+            if have == 0:
+                console.print("[dim]  所有书籍均无封面 URL，跳过[/dim]")
+                return
+            # 封面均已存在，直接进入推送和更新 Notion 阶段
+            success = 0
+        else:
+            # 逐一截图下载情况（前 3 本打印详细日志）
+            success = 0
+            for i, (book_id, url) in enumerate(pending.items()):
+                if i < 3:
+                    console.print(f"  下载 [{i+1}/{len(pending)}] {book_id[:12]}...")
+                result = _persist_cover(book_id, url)
+                if result:
+                    success += 1
+                elif i < 3:
+                    console.print(f"    [red]✗ 下载失败[/red] (URL: {url[:80]})")
+            if len(pending) > 3 and success > 0:
+                console.print(f"  ...共成功 [green]{success}[/green]/{len(pending)} 张")
+
+            if success == 0 and have == 0:
+                console.print("[red]✦ 所有封面下载失败！可能 WeRead 封面 URL 已过期或网络问题[/red]")
+                return
+
+        # 推送到 GitHub
+        if success > 0 or have > 0:
+            push_covers_to_github()
+
+        # 更新 Notion 页面封面
         updated = self.ns.update_page_covers()
         if updated > 0:
             console.print(f"  [green]✓ Notion 封面已更新 {updated} 本[/green]")
