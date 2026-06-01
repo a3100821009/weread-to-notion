@@ -5,7 +5,6 @@
 import json
 import os
 import subprocess
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -402,25 +401,29 @@ class SyncManager:
 
         console.print(f"\n[yellow]▶ 下载封面...[/yellow] (需下载 [cyan]{len(pending)}[/cyan] | 已有 [dim]{have}[/dim])")
 
-        if not pending and have == 0:
-            console.print("[dim]  所有书籍均无封面 URL，跳过[/dim]")
-            return
+        if not pending:
+            if have == 0:
+                console.print("[dim]  所有书籍均无封面 URL，跳过[/dim]")
+                return
+            # 封面均已存在，直接进入推送和更新 Notion 阶段
+            success = 0
+        else:
+            # 逐一截图下载情况（前 3 本打印详细日志）
+            success = 0
+            for i, (book_id, url) in enumerate(pending.items()):
+                if i < 3:
+                    console.print(f"  下载 [{i+1}/{len(pending)}] {book_id[:12]}...")
+                result = _persist_cover(book_id, url)
+                if result:
+                    success += 1
+                elif i < 3:
+                    console.print(f"    [red]✗ 下载失败[/red] (URL: {url[:80]})")
+            if len(pending) > 3 and success > 0:
+                console.print(f"  ...共成功 [green]{success}[/green]/{len(pending)} 张")
 
-        # 逐一截图下载情况（前 3 本打印详细日志）
-        success = 0
-        for i, (book_id, url) in enumerate(pending.items()):
-            if i < 3:
-                console.print(f"  下载 [{i+1}/{len(pending)}] {book_id[:12]}...")
-            result = _persist_cover(book_id, url)
-            if result:
-                success += 1
-            elif i < 3:
-                console.print(f"    [red]✗ 下载失败[/red] (URL: {url[:80]})")
-        if len(pending) > 3 and success > 0:
-            console.print(f"  ...共成功 [green]{success}[/green]/{len(pending)} 张")
-
-        if success == 0:
-            console.print("[red]✦ 所有封面下载失败！可能 WeRead 封面 URL 已过期或网络问题[/red]")
+            if success == 0 and have == 0:
+                console.print("[red]✦ 所有封面下载失败！可能 WeRead 封面 URL 已过期或网络问题[/red]")
+                return
 
         # 推送到 GitHub
         if success > 0 or have > 0:

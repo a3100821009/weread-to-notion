@@ -4,8 +4,6 @@ Notion 同步模块
 """
 
 import json
-import os
-import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -309,14 +307,28 @@ class NotionSyncer:
         return None
 
     def _get_or_create_shelf_db(self) -> str:
-        """获取或创建书架数据库"""
+        """获取或创建书架数据库（内嵌在父页面中，不产生子页面）"""
+        # 先搜索已有数据库（兼容之前全页模式创建的情况）
         db_id = self._search_in_parent(self.SHELF_DB_TITLE, "database")
         if db_id:
             return db_id
 
-        db = self.client.databases.create(
-            parent={"type": "page_id", "page_id": self.parent_page_id},
-            title=[{"type": "text", "text": {"content": self.SHELF_DB_TITLE}}],
+        # 通过 child_database 块在父页面内嵌创建（不产生子页面）
+        result = self.client.blocks.children.append(
+            block_id=self.parent_page_id,
+            children=[{
+                "object": "block",
+                "type": "child_database",
+                "child_database": {
+                    "title": self.SHELF_DB_TITLE,
+                },
+            }],
+        )
+        db_id = result["results"][0]["id"]
+
+        # 设置完整属性和图标
+        self.client.databases.update(
+            database_id=db_id,
             icon={"type": "emoji", "emoji": "📚"},
             properties={
                 "书名": {"title": {}},
@@ -349,7 +361,7 @@ class NotionSyncer:
                 "封面": {"files": {}},
             },
         )
-        return db["id"]
+        return db_id
 
     def _get_or_create_stats_page(self) -> str:
         """获取或创建阅读统计页面"""
@@ -422,18 +434,11 @@ class NotionSyncer:
                     reading_hours = round(rt / 3600, 1)
                     break
 
-            # 开始阅读日期
+                    # 开始阅读日期
             for field in ["firstReadTime", "firstOpenTime", "createTime"]:
                 ft = p.get(field, 0)
                 if ft and ft > 0:
                     start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
-                    break
-
-            # 阅读天数（尝试提取，若无则用阅读时长估算）
-            for field in ["readDays", "readingDays", "readDayCount"]:
-                rd = p.get(field, 0)
-                if rd and rd > 0:
-                    reading_days = int(rd)
                     break
 
         # 笔记统计
@@ -471,9 +476,11 @@ class NotionSyncer:
 
         existing_id = self._find_book_page(book_id)
         if existing_id:
+            # 更新已有页面：不覆盖书名（保留用户在 Notion 手动修改的标题）
+            update_props = {k: v for k, v in properties.items() if k != "书名"}
             self.client.pages.update(
                 page_id=existing_id,
-                properties=properties,
+                properties=update_props,
             )
             return existing_id
         else:
