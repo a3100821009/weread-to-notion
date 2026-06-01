@@ -4,6 +4,7 @@
 
 import json
 import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -178,6 +179,13 @@ class SyncManager:
         self.state["book_pages"] = self.ns._book_pages
         self.state["book_meta"] = self.state.get("book_meta", {})
         save_state(self.state)
+
+        # 最终确认
+        synced_books = len(self.ns._book_pages)
+        if synced_books == 0:
+            console.print("\n[yellow]⚠ 书架数据库中当前没有任何书籍记录。[/yellow]")
+            console.print("  请检查 GitHub Actions 运行日志中的书架同步汇总，或确认 Notion 集成权限正常。")
+
         console.print("\n[bold green]✅ 同步完成！[/bold green]")
 
     def _sync_shelf(self):
@@ -205,6 +213,11 @@ class SyncManager:
 
         # 同步每本书
         console.print(f"\n[yellow]▶ 同步书架（{total} 本）...[/yellow]")
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+        first_error = None
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -223,6 +236,7 @@ class SyncManager:
                 last_read_ts = book_shelf.get("readUpdateTime", 0)
                 state_key = f"book_{book_id}"
                 if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
+                    skip_count += 1
                     progress.advance(task)
                     continue
 
@@ -263,11 +277,24 @@ class SyncManager:
 
                     # 保存状态
                     self.state[state_key] = last_read_ts
+                    success_count += 1
 
                 except Exception as e:
-                    console.print(f"\n  [red]✗ {book_title}: {e}[/red]")
+                    fail_count += 1
+                    if first_error is None:
+                        first_error = (book_title, type(e).__name__, str(e))
+                    console.print(f"\n  [red]✗ {book_title}: {type(e).__name__}: {e}[/red]")
 
                 progress.advance(task)
+
+        # 汇总输出
+        console.print(f"\n[bold]书架同步汇总：[/bold] 成功 [green]{success_count}[/green] | 失败 [red]{fail_count}[/red] | 跳过 [dim]{skip_count}[/dim]")
+        if fail_count == total and total > 0:
+            console.print(f"[bold red]⚠ 所有书籍同步失败！[/bold red]")
+            if first_error:
+                console.print(f"[red]  首个错误：{first_error[0]} → {first_error[1]}: {first_error[2]}[/red]")
+        elif success_count == 0 and total > 0:
+            console.print("[yellow]⚠ 没有新书被同步（可能全部被增量跳过）[/yellow]")
 
         console.print("[green]✓ 书架同步完成[/green]")
 
