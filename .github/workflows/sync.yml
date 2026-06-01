@@ -1,19 +1,35 @@
 name: 微信读书 → Notion 自动同步
 
 on:
+  # 每天 UTC 18:00 执行一次（北京时间凌晨 2:00）
   schedule:
     - cron: "0 18 * * *"
+  # 支持手动触发
   workflow_dispatch:
+
+# 赋予 GITHUB_TOKEN 写入权限（用于推送封面图片）
+permissions:
+  contents: write
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: 拉取代码
+        uses: actions/checkout@v4
+        with:
+          # 确保 fetch 完整历史，否则 push 可能失败
+          fetch-depth: 0
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
       - name: 执行同步
         env:
           WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
