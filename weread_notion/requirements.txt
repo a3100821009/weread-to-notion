@@ -1,0 +1,6 @@
+requests>=2.31.0
+charset-normalizer>=3.3.0
+notion-client==2.2.1
+python-dotenv>=1.0.0
+click>=8.1.7
+rich>=13.7.0
