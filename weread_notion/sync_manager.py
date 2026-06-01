@@ -54,9 +54,9 @@ def push_covers_to_github():
             capture_output=True,
             timeout=10,
         )
-        # 添加封面文件
+        # 添加封面文件 + 同步状态（持久化 book_pages 映射）
         subprocess.run(
-            ["git", "add", "covers/"],
+            ["git", "add", "covers/", "sync_state.json"],
             capture_output=True,
             timeout=10,
         )
@@ -70,7 +70,7 @@ def push_covers_to_github():
             return  # 无变更
 
         subprocess.run(
-            ["git", "commit", "-m", "Update book covers"],
+            ["git", "commit", "-m", "Update book covers & sync state"],
             capture_output=True,
             timeout=10,
         )
@@ -79,7 +79,7 @@ def push_covers_to_github():
             capture_output=True,
             timeout=30,
         )
-        console.print("[green]✓ 封面已推送到 GitHub[/green]")
+        console.print("[green]✓ 封面 + 状态已推送到 GitHub[/green]")
     except Exception as e:
         console.print(f"[dim]封面推送跳过: {e}[/dim]")
 
