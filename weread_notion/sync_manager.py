@@ -329,7 +329,7 @@ class SyncManager:
                 except Exception as e:
                     return (book_id, False, (book_title, type(e).__name__, str(e)))
 
-            with ThreadPoolExecutor(max_workers=10) as pool:
+            with ThreadPoolExecutor(max_workers=15) as pool:
                 future_map = {pool.submit(sync_one, bs): bs["bookId"] for bs in sync_books}
                 for future in as_completed(future_map):
                     bid, ok, err = future.result()
