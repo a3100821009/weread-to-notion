@@ -64,23 +64,19 @@ def push_covers_to_github():
         if result.returncode == 0:
             return  # 无变更
 
-        # 创建临时分支（detached HEAD 无法推送）
+        # 提交并推送到 GitHub（使用 HEAD:branch 绕过 detached HEAD 限制）
         branch = os.environ.get("GITHUB_REF_NAME", "main")
-        subprocess.run(
-            ["git", "checkout", "-b", "cover-sync"],
-            capture_output=True, timeout=10,
-        )
         subprocess.run(
             ["git", "commit", "-m", "Update book covers & sync state"],
             capture_output=True, timeout=10,
         )
         push_result = subprocess.run(
-            ["git", "push", "origin", f"cover-sync:{branch}"],
-            capture_output=True, timeout=30,
+            ["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+            capture_output=True, timeout=60,
         )
         if push_result.returncode != 0:
-            stderr = push_result.stderr.decode()[:200]
-            console.print(f"[dim]封面推送失败: {stderr}[/dim]")
+            stderr = push_result.stderr.decode()[:300]
+            console.print(f"[red]✗ 封面推送失败: {stderr}[/red]")
             return
         console.print(f"[green]✓ 封面 + 状态已推送到 GitHub ({branch})[/green]")
     except Exception as e:
