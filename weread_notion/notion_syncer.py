@@ -276,7 +276,6 @@ class NotionSyncer:
     def setup(self):
         """初始化 Notion 结构（幂等，已存在则跳过）"""
         self._shelf_db_id = self._get_or_create_shelf_db()
-        self._stats_page_id = self._get_or_create_stats_page()
         # 确保数据库包含所有最新字段（兼容已有数据库）
         self._ensure_shelf_db_properties()
 
