@@ -420,9 +420,17 @@ class NotionSyncer:
                     reading_hours = round(rt / 3600, 1)
                     break
 
-            # 开始阅读日期
-            for field in ["firstReadTime", "firstOpenTime", "createTime"]:
+            # 开始阅读日期（尝试多个可能的数据源）
+            for field in ["firstReadTime", "firstOpenTime", "createTime", "create_time"]:
                 ft = p.get(field, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
+
+        # 如果进度数据里没有，从 book_info 的 addTime/createTime 找
+        if not start_date:
+            for field in ["createTime", "addTime", "create_time", "add_time"]:
+                ft = book_info.get(field, 0)
                 if ft and ft > 0:
                     start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
                     break
