@@ -310,6 +310,9 @@ class SyncManager:
                     progress_info = self.wr.get_book_progress(book_id)
                     nb_info = notebook_map.get(book_id)
 
+                    # 提取封面 URL（存到 book_meta 供后续下载用）
+                    cover_url = book_info.get("cover", "")
+
                     # 提取并存储阅读时间
                     reading_time = self._extract_reading_time(book_shelf, progress_info)
                     self.state.setdefault("book_meta", {})[book_id] = {
@@ -365,14 +368,6 @@ class SyncManager:
 
         # 清理已从书架移除的低阅读时间书籍
         self._cleanup_removed_books(current_book_ids)
-
-    @staticmethod
-    def _download_one_cover(book_id: str, cover_url: str):
-        """下载单本书封面到 covers/ 目录（在后台线程中执行）"""
-        if not cover_url:
-            return
-        from weread_notion.notion_syncer import _persist_cover
-        _persist_cover(book_id, cover_url)
 
     def _sync_stats(self):
         console.print("\n[yellow]▶ 同步阅读统计...[/yellow]")
