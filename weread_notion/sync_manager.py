@@ -294,6 +294,8 @@ class SyncManager:
                         "title": book_title,
                         "readingTime": existing_meta.get("readingTime", 0),
                         "coverUrl": cover_url,
+                        "noteCount": existing_meta.get("noteCount", 0),
+                        "reviewCount": existing_meta.get("reviewCount", 0),
                         "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
                     }
                     skip_count += 1
@@ -311,23 +313,25 @@ class SyncManager:
 
                     # 提取并存储阅读时间
                     reading_time = self._extract_reading_time(book_shelf, progress_info)
+
+                    note_count = nb_info.get("noteCount", 0) if nb_info else 0
+                    review_count = nb_info.get("reviewCount", 0) if nb_info else 0
+
                     self.state.setdefault("book_meta", {})[book_id] = {
                         "title": book_title,
                         "readingTime": reading_time,
                         "coverUrl": cover_url,
+                        "noteCount": note_count,
+                        "reviewCount": review_count,
                         "lastSynced": datetime.now().isoformat(),
                     }
 
                     # 同步到 Notion 书架数据库
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info)
 
-                    # 同步划线 + 想法（自己的 + 社交笔记）
+                    # 同步划线 + 想法：只要本书有更新就重新同步（先清空再重写）
                     if (self.sync_highlights or self.sync_reviews) and nb_info:
-                        has_notes = (
-                            nb_info.get("noteCount", 0) > 0
-                            or nb_info.get("reviewCount", 0) > 0
-                        )
-                        if has_notes:
+                        if note_count > 0 or review_count > 0:
                             notes = self.wr.get_book_notes(book_id)
 
                             # 同步获取社交笔记（热门划线 + 评论）
