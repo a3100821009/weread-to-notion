@@ -95,6 +95,7 @@ class SyncManager:
         # 获取笔记本概览（含划线/想法统计）
         console.print("[yellow]▶ 获取笔记概览...[/yellow]")
         notebooks = self.wr.get_notebooks()
+        # bookId -> notebook entry
         notebook_map = {nb["bookId"]: nb for nb in notebooks}
         console.print(f"  共 [cyan]{len(notebooks)}[/cyan] 本书有笔记")
 
@@ -114,7 +115,7 @@ class SyncManager:
                 book_title = book_shelf.get("title", book_id)
                 progress.update(task, description=f"[cyan]{book_title[:20]}[/cyan]")
 
-                # 增量检查
+                # 增量检查：最近阅读时间是否有变化
                 last_read_ts = book_shelf.get("readUpdateTime", 0)
                 state_key = f"book_{book_id}"
                 if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
@@ -122,12 +123,15 @@ class SyncManager:
                     continue
 
                 try:
+                    # 获取完整书籍信息
                     book_info = self.wr.get_book_info(book_id)
                     progress_info = self.wr.get_book_progress(book_id)
                     nb_info = notebook_map.get(book_id)
 
+                    # 同步到 Notion 书架数据库
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info)
 
+                    # 同步划线 + 想法
                     if (self.sync_highlights or self.sync_reviews) and nb_info:
                         has_notes = (
                             nb_info.get("noteCount", 0) > 0
@@ -137,6 +141,7 @@ class SyncManager:
                             notes = self.wr.get_book_notes(book_id)
                             self.ns.sync_book_notes(page_id, notes, book_title)
 
+                    # 保存状态
                     self.state[state_key] = last_read_ts
 
                 except Exception as e:
