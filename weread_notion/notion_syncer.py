@@ -93,13 +93,13 @@ class NotionSyncer:
         self._shelf_db_id = self._get_or_create_shelf_db()
         self._stats_page_id = self._get_or_create_stats_page()
 
-    def _search_in_parent(self, title: str, obj_type: str) -> Optional[str]:
+        def _search_in_parent(self, title: str, obj_type: str) -> Optional[str]:
         """在父页面中查找已存在的子页面/数据库"""
-        result = self.client.search(
-            query=title,
-            filter={"property": "object", "value": obj_type},
-        )
+        result = self.client.search(query=title)
         for item in result.get("results", []):
+            # 匹配对象类型
+            if item.get("object") != obj_type:
+                continue
             # 检查父级
             parent = item.get("parent", {})
             if parent.get("page_id", "").replace("-", "") == self.parent_page_id.replace("-", ""):
