@@ -17,6 +17,9 @@ from notion_client import Client
 
 # 封面存放目录
 COVERS_DIR = Path("covers")
+# jsDelivr CDN 代理 GitHub 文件（raw.githubusercontent.com 国内被墙，Notion 抓不到）
+GITHUB_CDN_BASE = "https://cdn.jsdelivr.net/gh/a3100821009/weread-to-notion@main/covers"
+# raw URL 作为兜底（海外用户可用）
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
 
 
@@ -102,9 +105,9 @@ def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str
 
     cover_path = COVERS_DIR / f"{book_id}.jpg"
 
-    # 如果本地已有封面，直接返回 GitHub URL
+    # 如果本地已有封面，直接返回 CDN URL（jsDelivr 国内可访问）
     if cover_path.exists():
-        return f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+        return f"{GITHUB_CDN_BASE}/{book_id}.jpg"
 
     try:
         COVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -118,7 +121,7 @@ def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str
         with open(cover_path, "wb") as f:
             f.write(image_bytes)
 
-        return f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+        return f"{GITHUB_CDN_BASE}/{book_id}.jpg"
     except Exception:
         return ""
 
@@ -519,7 +522,7 @@ class NotionSyncer:
         for book_id, page_id in self._book_pages.items():
             cover_path = COVERS_DIR / f"{book_id}.jpg"
             if cover_path.exists():
-                url = f"{GITHUB_RAW_BASE}/{book_id}.jpg"
+                url = f"{GITHUB_CDN_BASE}/{book_id}.jpg"
                 tasks.append((book_id, page_id, url))
 
         if not tasks:
