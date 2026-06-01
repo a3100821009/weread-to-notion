@@ -293,13 +293,13 @@ class NotionSyncer:
             pass
 
     def _search_in_parent(self, title: str, obj_type: str) -> Optional[str]:
-        """在父页面中查找已存在的子页面/数据库"""
+        """在父页面中查找已存在的子页面/数据库（跳过已归档的）"""
         result = self.client.search(query=title)
         for item in result.get("results", []):
-            # 匹配对象类型
             if item.get("object") != obj_type:
                 continue
-            # 检查父级
+            if item.get("archived", False):
+                continue  # 跳过已归档的（删除后进回收站的）
             parent = item.get("parent", {})
             if parent.get("page_id", "").replace("-", "") == self.parent_page_id.replace("-", ""):
                 return item["id"]
