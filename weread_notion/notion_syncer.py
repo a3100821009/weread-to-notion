@@ -382,6 +382,8 @@ class NotionSyncer:
         book_info: dict,
         progress_info: Optional[dict] = None,
         notebook_info: Optional[dict] = None,
+        book_shelf: Optional[dict] = None,
+        book_read_detail: Optional[dict] = None,
     ) -> str:
         """
         同步单本书到书架数据库（创建或更新）
@@ -431,6 +433,22 @@ class NotionSyncer:
         if not start_date:
             for field in ["createTime", "addTime", "create_time", "add_time"]:
                 ft = book_info.get(field, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
+
+        # 最后兜底：从书架数据尝试
+        if not start_date and book_shelf:
+            for field in ["createTime", "addTime", "readUpdateTime"]:
+                ft = book_shelf.get(field, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
+
+        # 从书籍阅读详情（首次阅读日期）提取
+        if not start_date and book_read_detail:
+            for field in ["firstReadTime", "firstOpenTime", "createTime", "startTime"]:
+                ft = book_read_detail.get(field, 0)
                 if ft and ft > 0:
                     start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
                     break

@@ -302,6 +302,9 @@ class SyncManager:
                     note_count = nb_info.get("noteCount", 0) if nb_info else 0
                     review_count = nb_info.get("reviewCount", 0) if nb_info else 0
 
+                    # 获取书本阅读详情（含首次阅读日期）
+                    book_read_detail = self.wr.get_book_read_detail(book_id)
+
                     self.state.setdefault("book_meta", {})[book_id] = {
                         "title": book_title,
                         "readingTime": reading_time, "coverUrl": cover_url,
@@ -309,7 +312,7 @@ class SyncManager:
                         "lastSynced": datetime.now().isoformat(),
                     }
 
-                    page_id = self.ns.sync_book(book_info, progress_info, nb_info)
+                    page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
                     if (self.sync_highlights or self.sync_reviews) and nb_info:
                         if note_count > 0 or review_count > 0:

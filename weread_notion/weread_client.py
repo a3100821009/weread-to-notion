@@ -92,6 +92,16 @@ class WeReadClient:
             params["baseTime"] = base_time
         return self._call("/readdata/detail", **params)
 
+    def get_book_read_detail(self, book_id: str) -> dict:
+        """
+        获取某本书的阅读详情（含首次阅读日期等）
+        如果 API 不存在，返回空字典
+        """
+        try:
+            return self._call("/readdata/book_detail", bookId=book_id)
+        except Exception:
+            return {}
+
     # -------------------------------------------------------------------------
     # 笔记 / 划线 / 想法
     # -------------------------------------------------------------------------
