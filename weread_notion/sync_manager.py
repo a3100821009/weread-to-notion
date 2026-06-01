@@ -5,12 +5,12 @@
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
 from rich.table import Table
 
@@ -90,7 +90,7 @@ class SyncManager:
         parent_page_id: str,
         sync_highlights: bool = True,
         sync_reviews: bool = True,
-        request_delay: float = 0.15,
+        request_delay: float = 0,
         incremental: bool = True,
     ):
         self.wr = WeReadClient(weread_key, request_delay)
@@ -261,94 +261,84 @@ class SyncManager:
         skip_count = 0
         first_error = None
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("同步书架", total=total)
+        # 先处理增量跳过（不需要 API 调用，快速）
+        sync_books = []
+        for book_shelf in books:
+            book_id = book_shelf["bookId"]
+            book_title = book_shelf.get("title", book_id)
+            last_read_ts = book_shelf.get("readUpdateTime", 0)
+            state_key = f"book_{book_id}"
 
-            for book_shelf in books:
+            if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
+                existing_meta = self.state.get("book_meta", {}).get(book_id, {})
+                shelf_cover = book_shelf.get("cover", "")
+                cover_url = shelf_cover or existing_meta.get("coverUrl", "")
+                self.state.setdefault("book_meta", {})[book_id] = {
+                    "title": book_title,
+                    "readingTime": existing_meta.get("readingTime", 0),
+                    "coverUrl": cover_url,
+                    "noteCount": existing_meta.get("noteCount", 0),
+                    "reviewCount": existing_meta.get("reviewCount", 0),
+                    "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
+                }
+                skip_count += 1
+            else:
+                sync_books.append(book_shelf)
+
+        # 并发同步需要更新的书
+        if sync_books:
+            console.print(f"  并发同步 [cyan]{len(sync_books)}[/cyan] 本（10 线程）...")
+
+            def sync_one(book_shelf: dict) -> tuple:
+                """在线程中同步单本书，返回 (book_id, 是否成功, 错误信息)"""
                 book_id = book_shelf["bookId"]
                 book_title = book_shelf.get("title", book_id)
-                progress.update(task, description=f"[cyan]{book_title[:20]}[/cyan]")
-
-                # 增量检查：最近阅读时间是否有变化
-                last_read_ts = book_shelf.get("readUpdateTime", 0)
-                state_key = f"book_{book_id}"
-                if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
-                    # 增量跳过的书也存 coverUrl（从书架数据提取）
-                    existing_meta = self.state.get("book_meta", {}).get(book_id, {})
-                    shelf_cover = book_shelf.get("cover", "")
-                    cover_url = shelf_cover or existing_meta.get("coverUrl", "")
-                    self.state.setdefault("book_meta", {})[book_id] = {
-                        "title": book_title,
-                        "readingTime": existing_meta.get("readingTime", 0),
-                        "coverUrl": cover_url,
-                        "noteCount": existing_meta.get("noteCount", 0),
-                        "reviewCount": existing_meta.get("reviewCount", 0),
-                        "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
-                    }
-                    skip_count += 1
-                    progress.advance(task)
-                    continue
-
                 try:
-                    # 获取完整书籍信息
                     book_info = self.wr.get_book_info(book_id)
                     progress_info = self.wr.get_book_progress(book_id)
                     nb_info = notebook_map.get(book_id)
-
-                    # 提取封面 URL（存到 book_meta 供后续下载用）
                     cover_url = book_info.get("cover", "")
-
-                    # 提取并存储阅读时间
                     reading_time = self._extract_reading_time(book_shelf, progress_info)
-
                     note_count = nb_info.get("noteCount", 0) if nb_info else 0
                     review_count = nb_info.get("reviewCount", 0) if nb_info else 0
 
                     self.state.setdefault("book_meta", {})[book_id] = {
                         "title": book_title,
-                        "readingTime": reading_time,
-                        "coverUrl": cover_url,
-                        "noteCount": note_count,
-                        "reviewCount": review_count,
+                        "readingTime": reading_time, "coverUrl": cover_url,
+                        "noteCount": note_count, "reviewCount": review_count,
                         "lastSynced": datetime.now().isoformat(),
                     }
 
-                    # 同步到 Notion 书架数据库
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info)
 
-                    # 同步划线 + 想法：只要本书有更新就重新同步（先清空再重写）
                     if (self.sync_highlights or self.sync_reviews) and nb_info:
                         if note_count > 0 or review_count > 0:
                             notes = self.wr.get_book_notes(book_id)
-
-                            # 同步获取社交笔记（热门划线 + 评论）
                             social = None
                             try:
                                 social = self.wr.get_book_social_notes(book_id)
                             except Exception:
                                 pass
-
                             self.ns.sync_book_notes(page_id, notes, social, book_title)
 
-                    # 保存状态
-                    self.state[state_key] = last_read_ts
-                    success_count += 1
-
+                    self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
+                    return (book_id, True, None)
                 except Exception as e:
-                    fail_count += 1
-                    if first_error is None:
-                        first_error = (book_title, type(e).__name__, str(e))
-                    console.print(f"\n  [red]✗ {book_title}: {type(e).__name__}: {e}[/red]")
+                    return (book_id, False, (book_title, type(e).__name__, str(e)))
 
-                progress.advance(task)
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                future_map = {pool.submit(sync_one, bs): bs["bookId"] for bs in sync_books}
+                for future in as_completed(future_map):
+                    bid, ok, err = future.result()
+                    if ok:
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                        if first_error is None:
+                            first_error = err
+                        title, etype, msg = err
+                        console.print(f"\n  [red]✗ {title[:20]}: {etype}: {msg[:80]}[/red]")
 
-        # 汇总输出
         console.print(f"\n[bold]书架同步汇总：[/bold] 成功 [green]{success_count}[/green] | 失败 [red]{fail_count}[/red] | 跳过 [dim]{skip_count}[/dim]")
         if fail_count == total and total > 0:
             console.print(f"[bold red]⚠ 所有书籍同步失败！[/bold red]")
