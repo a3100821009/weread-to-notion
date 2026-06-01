@@ -285,7 +285,7 @@ class NotionSyncer:
             self.client.databases.update(
                 database_id=self._shelf_db_id,
                 properties={
-                    "阅读时长/h": {"number": {"format": "number"}},
+                    "阅读时长": {"rich_text": {}},
                     "开始日期": {"date": {}},
                 },
             )
@@ -337,7 +337,7 @@ class NotionSyncer:
                 },
                 "划线数": {"number": {"format": "number"}},
                 "想法数": {"number": {"format": "number"}},
-                "阅读时长/h": {"number": {"format": "number"}},
+                "阅读时长": {"rich_text": {}},
                 "开始日期": {"date": {}},
                 "最近阅读": {"date": {}},
                 "出版社": {"rich_text": {}},
@@ -420,7 +420,7 @@ class NotionSyncer:
                     reading_hours = round(rt / 3600, 1)
                     break
 
-                    # 开始阅读日期
+            # 开始阅读日期
             for field in ["firstReadTime", "firstOpenTime", "createTime"]:
                 ft = p.get(field, 0)
                 if ft and ft > 0:
@@ -456,7 +456,7 @@ class NotionSyncer:
         if last_read_date:
             properties["最近阅读"] = {"date": {"start": last_read_date}}
         if reading_hours > 0:
-            properties["阅读时长/h"] = {"number": reading_hours}
+            properties["阅读时长"] = {"rich_text": _rich(f"{reading_hours}h")}
         if start_date:
             properties["开始日期"] = {"date": {"start": start_date}}
 
