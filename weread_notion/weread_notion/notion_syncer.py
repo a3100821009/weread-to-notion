@@ -4,8 +4,6 @@ Notion 同步模块
 """
 
 import json
-import os
-import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -17,10 +15,8 @@ from notion_client import Client
 
 # 封面存放目录
 COVERS_DIR = Path("covers")
-# jsDelivr CDN 代理 GitHub 文件（raw.githubusercontent.com 国内被墙，Notion 抓不到）
-GITHUB_CDN_BASE = "https://cdn.jsdelivr.net/gh/a3100821009/weread-to-notion@main/covers"
-# raw URL 作为兜底（海外用户可用）
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
+# 仓库已公开，使用 GitHub raw URL
+GITHUB_COVER_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
 
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
@@ -105,9 +101,9 @@ def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str
 
     cover_path = COVERS_DIR / f"{book_id}.jpg"
 
-    # 如果本地已有封面，直接返回 CDN URL（jsDelivr 国内可访问）
+    # 如果本地已有封面，直接返回 GitHub raw URL
     if cover_path.exists():
-        return f"{GITHUB_CDN_BASE}/{book_id}.jpg"
+        return f"{GITHUB_COVER_BASE}/{book_id}.jpg"
 
     try:
         COVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,7 +117,7 @@ def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str
         with open(cover_path, "wb") as f:
             f.write(image_bytes)
 
-        return f"{GITHUB_CDN_BASE}/{book_id}.jpg"
+        return f"{GITHUB_COVER_BASE}/{book_id}.jpg"
     except Exception:
         return ""
 
@@ -280,7 +276,21 @@ class NotionSyncer:
     def setup(self):
         """初始化 Notion 结构（幂等，已存在则跳过）"""
         self._shelf_db_id = self._get_or_create_shelf_db()
-        self._stats_page_id = self._get_or_create_stats_page()
+        # 确保数据库包含所有最新字段（兼容已有数据库）
+        self._ensure_shelf_db_properties()
+
+    def _ensure_shelf_db_properties(self):
+        """补充书籍数据库中可能缺失的新字段"""
+        try:
+            self.client.databases.update(
+                database_id=self._shelf_db_id,
+                properties={
+                    "阅读时长/h": {"number": {"format": "number"}},
+                    "开始日期": {"date": {}},
+                },
+            )
+        except Exception:
+            pass
 
     def _search_in_parent(self, title: str, obj_type: str) -> Optional[str]:
         """在父页面中查找已存在的子页面/数据库"""
@@ -296,7 +306,8 @@ class NotionSyncer:
         return None
 
     def _get_or_create_shelf_db(self) -> str:
-        """获取或创建书架数据库"""
+        """获取或创建书架数据库（作为父页面的子数据库）"""
+        # 先搜索已有数据库
         db_id = self._search_in_parent(self.SHELF_DB_TITLE, "database")
         if db_id:
             return db_id
@@ -326,6 +337,8 @@ class NotionSyncer:
                 },
                 "划线数": {"number": {"format": "number"}},
                 "想法数": {"number": {"format": "number"}},
+                "阅读时长/h": {"number": {"format": "number"}},
+                "开始日期": {"date": {}},
                 "最近阅读": {"date": {}},
                 "出版社": {"rich_text": {}},
                 "ISBN": {"rich_text": {}},
@@ -387,6 +400,8 @@ class NotionSyncer:
         progress_val = 0
         finish_status = "📥 未开始"
         last_read_date = None
+        reading_hours = 0
+        start_date = None
         if progress_info and progress_info.get("book"):
             p = progress_info["book"]
             progress_val = p.get("progress", 0) / 100.0
@@ -397,6 +412,20 @@ class NotionSyncer:
                 finish_status = "✅ 已读完"
             elif p.get("isStartReading"):
                 finish_status = "📖 阅读中"
+
+            # 阅读时长（从进度数据中提取，单位秒 → 小时，保留 1 位小数）
+            for field in ["readTime", "readingTime", "totalReadTime", "duration"]:
+                rt = p.get(field, 0)
+                if rt and rt > 0:
+                    reading_hours = round(rt / 3600, 1)
+                    break
+
+                    # 开始阅读日期
+            for field in ["firstReadTime", "firstOpenTime", "createTime"]:
+                ft = p.get(field, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
 
         # 笔记统计
         highlight_count = 0
@@ -426,12 +455,18 @@ class NotionSyncer:
             properties["评分"] = {"number": round(rating / 10, 1)}
         if last_read_date:
             properties["最近阅读"] = {"date": {"start": last_read_date}}
+        if reading_hours > 0:
+            properties["阅读时长/h"] = {"number": reading_hours}
+        if start_date:
+            properties["开始日期"] = {"date": {"start": start_date}}
 
         existing_id = self._find_book_page(book_id)
         if existing_id:
+            # 更新已有页面：不覆盖书名（保留用户在 Notion 手动修改的标题）
+            update_props = {k: v for k, v in properties.items() if k != "书名"}
             self.client.pages.update(
                 page_id=existing_id,
-                properties=properties,
+                properties=update_props,
             )
             return existing_id
         else:
@@ -522,7 +557,7 @@ class NotionSyncer:
         for book_id, page_id in self._book_pages.items():
             cover_path = COVERS_DIR / f"{book_id}.jpg"
             if cover_path.exists():
-                url = f"{GITHUB_CDN_BASE}/{book_id}.jpg"
+                url = f"{GITHUB_COVER_BASE}/{book_id}.jpg"
                 tasks.append((book_id, page_id, url))
 
         if not tasks:

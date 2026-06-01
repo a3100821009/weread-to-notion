@@ -5,7 +5,6 @@
 import json
 import os
 import subprocess
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -91,14 +90,12 @@ class SyncManager:
         parent_page_id: str,
         sync_highlights: bool = True,
         sync_reviews: bool = True,
-        sync_stats: bool = True,
         request_delay: float = 0.15,
         incremental: bool = True,
     ):
         self.wr = WeReadClient(weread_key, request_delay)
         self.sync_highlights = sync_highlights
         self.sync_reviews = sync_reviews
-        self.sync_stats = sync_stats
         self.incremental = incremental
         self.state = load_state()
         self.ns = NotionSyncer(
@@ -217,10 +214,6 @@ class SyncManager:
 
         # 2. 检测并清理书架中已移除的低阅读时间书籍
         #    已在 _sync_shelf 末尾调用 _cleanup_removed_books
-
-        # 3. 同步阅读统计
-        if self.sync_stats:
-            self._sync_stats()
 
         # 回存 book_pages 映射 + book_meta
         self.state["book_pages"] = self.ns._book_pages
@@ -368,15 +361,6 @@ class SyncManager:
 
         # 清理已从书架移除的低阅读时间书籍
         self._cleanup_removed_books(current_book_ids)
-
-    def _sync_stats(self):
-        console.print("\n[yellow]▶ 同步阅读统计...[/yellow]")
-        try:
-            stats = self.wr.get_read_stats(mode="overall")
-            self.ns.sync_stats(stats, "总计（全部历史）")
-            console.print("[green]✓ 阅读统计同步完成[/green]")
-        except Exception as e:
-            console.print(f"[red]✗ 阅读统计同步失败：{e}[/red]")
 
     def _sync_all_covers(self):
         """从 book_meta 读取 coverUrl，逐一下载封面 → 推送 GitHub → 更新 Notion"""
