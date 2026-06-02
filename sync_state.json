@@ -245,13 +245,13 @@
     "3300062940": {
       "title": "克苏鲁的呼唤",
       "author": "田边刚",
-      "readingTime": 28,
+      "readingTime": 37,
       "coverUrl": "https://cdn.weread.qq.com/weread/cover/45/cpplatform_hkmww7u5xyuh1rzuw6bh2z/t6_cpplatform_hkmww7u5xyuh1rzuw6bh2z1688094279.jpg",
       "noteCount": 0,
       "reviewCount": 0,
       "progress": 0,
-      "startDate": "2026-06-01",
-      "lastSynced": "2026-06-02T08:10:12.919970"
+      "startDate": "2026-06-02",
+      "lastSynced": "2026-06-02T10:43:44.392909"
     },
     "3300048048": {
       "title": "怪物解剖学",
@@ -394,7 +394,7 @@
       "reviewCount": 0,
       "progress": 0,
       "startDate": "2026-06-01",
-      "lastSynced": "2026-06-02T08:15:33.914361"
+      "lastSynced": "2026-06-02T10:43:43.737499"
     },
     "40726683": {
       "title": "克苏鲁神话IV（果麦经典）",
@@ -1301,13 +1301,13 @@
     "24153287": {
       "title": "克苏鲁神话I-Ⅲ（套装共3册）（果麦经典）",
       "author": "H.P.洛夫克拉夫特",
-      "readingTime": 17684,
+      "readingTime": 17957,
       "coverUrl": "https://wfqqreader-1252317822.image.myqcloud.com/cover/287/24153287/t6_24153287.jpg",
       "noteCount": 37,
       "reviewCount": 29,
       "progress": 43,
       "startDate": "2026-06-02",
-      "lastSynced": "2026-06-02T08:10:36.959507"
+      "lastSynced": "2026-06-02T10:43:44.307227"
     },
     "3300050805": {
       "title": "飓光志（卷三）：渡誓",
@@ -1743,5 +1743,6 @@
     "CB_2BpBmPBm48Qc6hG6gi9rWH0t": "373b30ac-1fc5-817d-8572-da6c2421e377",
     "3300123774": "373b30ac-1fc5-817b-bf61-f9b54517f1b7",
     "33892197": "373b30ac-1fc5-814d-92aa-ebf92eb30604"
-  }
+  },
+  "book_923962": 1780282479
 }
