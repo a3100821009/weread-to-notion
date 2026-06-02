@@ -245,6 +245,118 @@ def _build_author_chart(prefer_author: list[dict]) -> str:
     return _chart_url(config, width=600, height=380)
 
 
+def _build_reading_stat_chart(
+    total_sec: int,
+    read_days: int,
+    note_count: int,
+    max_day_sec: int,
+    max_day_label: str,
+    start_label: str,
+    read_records: list,
+) -> str:
+    """
+    生成仿微信读书 App 阅读统计风格的图表。
+    上方：4 个统计卡片（累计时长、阅读天数、笔记数、单日最久）
+    下方：每日阅读水平条形图（日期 + 蓝色进度条 + 时长）
+    """
+
+    def sec_to_hm(sec: int) -> str:
+        if sec <= 0:
+            return "0分钟"
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        if h > 0 and m > 0:
+            return f"{h}小时{m}分钟"
+        elif h > 0:
+            return f"{h}小时"
+        else:
+            return f"{m}分钟"
+
+    # 每日明细
+    day_data = []
+    if read_records:
+        for rec in read_records:
+            d = rec.get("date", "") or rec.get("day", "")
+            dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
+            if d and dur and dur > 0:
+                label = d[-5:] if len(d) >= 5 else d  # MM-DD
+                day_data.append((label, dur))
+        day_data = sorted(day_data, key=lambda x: x[0])
+
+    # 如果没有任何数据，返回空
+    if total_sec == 0 and read_days == 0 and not day_data:
+        return ""
+
+    has_chart = len(day_data) >= 1
+
+    # ── 用 QuickChart 生成组合图 ──────────────────────────────
+    # 策略：上方用一个水平 bar 图展示汇总（4项统计用不同颜色），
+    #        下方用水平 bar 展示每日记录
+    # 为了实现"卡片样式"的统计，用 annotation + 自定义 HTML 不可行
+    # 改用两段式：先生成统计卡片图，再生成每日进度图
+
+    # 每日图（若有数据）
+    if has_chart:
+        labels_chart = [x[0] for x in day_data]
+        data_chart = [round(x[1] / 60, 1) for x in day_data]
+        max_val = max(data_chart) if data_chart else 1
+        max_val_padded = max_val * 1.25  # 留右边空间显示标签
+
+        # 构建带标签的水平条形图（仿App每日进度条）
+        bar_config = {
+            "type": "bar",
+            "data": {
+                "labels": labels_chart,
+                "datasets": [{
+                    "data": data_chart,
+                    "backgroundColor": "#5BB8F5",
+                    "borderRadius": 6,
+                    "barThickness": 22,
+                }],
+            },
+            "options": {
+                "indexAxis": "y",
+                "layout": {"padding": {"left": 10, "right": 80, "top": 10, "bottom": 10}},
+                "plugins": {
+                    "legend": {"display": False},
+                    "datalabels": {
+                        "anchor": "end",
+                        "align": "right",
+                        "formatter": "function(v){var h=Math.floor(v/60),m=Math.round(v%60);return h>0?(m>0?h+'小时'+m+'分':h+'小时'):m+'分钟';}",
+                        "font": {"size": 11},
+                        "color": "#444",
+                    },
+                },
+                "scales": {
+                    "x": {
+                        "display": False,
+                        "max": max_val_padded,
+                        "grid": {"display": False},
+                        "border": {"display": False},
+                    },
+                    "y": {
+                        "grid": {"display": False},
+                        "ticks": {
+                            "font": {"size": 13, "weight": "bold"},
+                            "color": "#5BB8F5",
+                            "padding": 8,
+                        },
+                        "border": {"display": False},
+                    },
+                },
+            },
+        }
+
+        # 动态高度：每行约 36px + 头部 60px
+        chart_height = max(200, len(labels_chart) * 38 + 60)
+        chart_url = _chart_url(bar_config, width=600, height=chart_height)
+    else:
+        chart_url = ""
+
+    # 只返回每日进度条图（摘要统计已在外层以文字形式呈现）
+    return chart_url
+
+
 # ── Notion 的 heading_2 着色辅助 ─────────────────────────────────────────
 
 def _h2_colored(text: str, color: str) -> dict:
@@ -706,10 +818,11 @@ class NotionSyncer:
         blocks.append(_divider())
 
         # ══════════════════════════════════════
-        # 5. 阅读统计（黄色 h2）— 图表形式
+        # 5. 阅读统计（黄色 h2）— 仿微信读书App样式
         # ══════════════════════════════════════
         blocks.append(_h2_colored("📊 阅读统计", "yellow"))
 
+        # ── 收集每日阅读记录 ────────────────────────────────
         read_records = []
         if book_read_detail:
             for key in ["readRecords", "records", "dailyRead", "readStat", "readingRecords", "dailyRecords"]:
@@ -718,76 +831,101 @@ class NotionSyncer:
                     read_records = records
                     break
 
-        if read_records:
-            # 按日期正序排列
-            sorted_recs = sorted(read_records, key=lambda r: r.get("date", "") or r.get("day", ""))
-            labels = []
-            data = []
-            for rec in sorted_recs:
-                date = rec.get("date", "") or rec.get("day", "")
-                dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-                if date and dur:
-                    labels.append(date[-5:])  # 只显示 MM-DD
-                    data.append(round(dur / 60, 1))  # 转分钟
+        # ── 收集汇总数据 ─────────────────────────────────────
+        total_sec = 0
+        read_days = 0
+        note_count = (notebook_info.get("noteCount", 0) if notebook_info else 0) + \
+                     (notebook_info.get("reviewCount", 0) if notebook_info else 0)
+        max_day_sec = 0
+        max_day_label = ""
+        start_label = ""
 
-            if len(data) > 1:
-                # 生成柱状图
-                chart_cfg = {
-                    "type": "bar",
-                    "data": {
-                        "labels": labels,
-                        "datasets": [{
-                            "label": "阅读时长（分钟）",
-                            "data": data,
-                            "backgroundColor": "#4A90D9",
-                            "borderRadius": 3,
-                        }],
-                    },
-                    "options": {
-                        "plugins": {
-                            "legend": {"display": False},
-                        },
-                        "scales": {
-                            "y": {"beginAtZero": True, "title": {"display": True, "text": "分钟"}},
-                            "x": {"ticks": {"maxRotation": 45, "font": {"size": 9}}},
-                        },
-                    },
-                }
-                chart_url = _chart_url(chart_cfg, width=680, height=300)
-                blocks.append(_image_block(chart_url, f"阅读记录 · 共 {len(read_records)} 天"))
-            elif len(data) == 1:
-                hm = f"{data[0]}分钟" if data[0] < 60 else f"{round(data[0]/60, 1)}h"
-                blocks.append(_paragraph(f"📅 {labels[0]} · 阅读 {hm}"))
+        # 从 book_read_detail 取汇总
+        if book_read_detail:
+            for f in ["totalReadTime", "readingTime", "totalTime"]:
+                v = book_read_detail.get(f, 0)
+                if v and v > 0:
+                    total_sec = v
+                    break
+            for f in ["readDays", "readingDays", "days"]:
+                v = book_read_detail.get(f, 0)
+                if v and v > 0:
+                    read_days = v
+                    break
+
+        # 从每日记录补充 & 算最长单日
+        if read_records:
+            day_data = []
+            for rec in read_records:
+                d = rec.get("date", "") or rec.get("day", "")
+                dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
+                if dur and dur > 0:
+                    day_data.append((d, dur))
+            if day_data:
+                if total_sec == 0:
+                    total_sec = sum(v for _, v in day_data)
+                if read_days == 0:
+                    read_days = len(day_data)
+                best = max(day_data, key=lambda x: x[1])
+                max_day_sec = best[1]
+                max_day_label = best[0][-5:] if len(best[0]) >= 5 else best[0]
+                # 开始日期
+                sorted_days = sorted(day_data, key=lambda x: x[0])
+                start_label = sorted_days[0][0][-5:] if sorted_days else ""
+
+        # 从阅读进度兜底
+        if total_sec == 0 and progress_info and progress_info.get("book"):
+            p = progress_info["book"]
+            for f in ["readTime", "readingTime", "totalReadTime", "duration"]:
+                v = p.get(f, 0)
+                if v and v > 0:
+                    total_sec = v
+                    break
+
+        def _sec_to_hm(sec: int) -> str:
+            """秒 → 'X小时Y分钟' 或 'X分钟'"""
+            if sec <= 0:
+                return "0分钟"
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            if h > 0 and m > 0:
+                return f"{h}小时{m}分钟"
+            elif h > 0:
+                return f"{h}小时"
             else:
-                blocks.append(_paragraph(f"共 {len(read_records)} 天有阅读记录"))
-                blocks.append(_paragraph("（阅读时长数据不完整，无法生成图表）"))
-        elif book_read_detail:
-            total = book_read_detail.get("totalReadTime", 0) or book_read_detail.get("readingTime", 0)
-            days = book_read_detail.get("readDays", 0)
-            parts = []
-            if days:
-                parts.append(f"阅读天数：{days} 天")
-            if total:
-                hm = f"{total // 60}分钟" if total < 3600 else f"{round(total / 3600, 1)}h"
-                parts.append(f"总时长：{hm}")
-            blocks.append(_paragraph(" · ".join(parts) if parts else "（阅读统计数据暂不可用）"))
-        else:
-            # 从阅读进度数据兜底
-            if progress_info and progress_info.get("book"):
-                p = progress_info["book"]
-                reading_time = 0
-                for field in ["readTime", "readingTime", "totalReadTime", "duration"]:
-                    rt = p.get(field, 0)
-                    if rt and rt > 0:
-                        reading_time = rt
-                        break
-                if reading_time > 0:
-                    hm = f"{reading_time // 60}分钟" if reading_time < 3600 else f"{round(reading_time / 3600, 1)}h"
-                    blocks.append(_paragraph(f"阅读时长：{hm}"))
-                else:
-                    blocks.append(_paragraph("（阅读统计数据暂不可用）"))
-            else:
-                blocks.append(_paragraph("（阅读统计数据暂不可用）"))
+                return f"{m}分钟"
+
+        # ── 文字版汇总（仿App 4格统计卡片）──────────────────────
+        summary_lines = []
+        if total_sec > 0:
+            summary_lines.append(f"⏱ 累计时长    {_sec_to_hm(total_sec)}")
+            if start_label:
+                summary_lines[-1] += f"    （{start_label} 开始阅读）"
+        if read_days > 0:
+            summary_lines.append(f"📅 阅读天数    {read_days} 天")
+        if note_count > 0:
+            summary_lines.append(f"📝 笔记/划线    {note_count} 条")
+        if max_day_sec > 0:
+            max_label = f"（{max_day_label}）" if max_day_label else ""
+            summary_lines.append(f"🏆 单日最久    {_sec_to_hm(max_day_sec)} {max_label}")
+
+        for line in summary_lines:
+            blocks.append(_paragraph(line))
+
+        # ── 每日阅读进度条图 ─────────────────────────────────────
+        stat_chart_url = _build_reading_stat_chart(
+            total_sec=total_sec,
+            read_days=read_days,
+            note_count=note_count,
+            max_day_sec=max_day_sec,
+            max_day_label=max_day_label,
+            start_label=start_label,
+            read_records=read_records,
+        )
+        if stat_chart_url:
+            blocks.append(_image_block(stat_chart_url, "每日阅读记录"))
+        elif not summary_lines:
+            blocks.append(_paragraph("（阅读统计数据暂不可用）"))
 
         # ══════════════════════════════════════
         # 写入 Notion
