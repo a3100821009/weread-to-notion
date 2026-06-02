@@ -94,13 +94,18 @@ class WeReadClient:
 
     def get_book_read_detail(self, book_id: str) -> dict:
         """
-        获取某本书的阅读详情（含首次阅读日期等）
-        如果 API 不存在，返回空字典
+        获取某本书的阅读详情（含阅读记录、首次阅读日期等）
+        尝试多个可能的 API 端点，全部失败返回空字典
         """
-        try:
-            return self._call("/readdata/book_detail", bookId=book_id)
-        except Exception:
-            return {}
+        for endpoint in ["/readdata/book_detail", "/book/readdetail", "/readdata/book_read_detail",
+                         "/book/readdata", "/readdata/detail"]:
+            try:
+                data = self._call(endpoint, bookId=book_id)
+                if data and data.get("errcode", 0) == 0:
+                    return data
+            except Exception:
+                continue
+        return {}
 
     # -------------------------------------------------------------------------
     # 笔记 / 划线 / 想法

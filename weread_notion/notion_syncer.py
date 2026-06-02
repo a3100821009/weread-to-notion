@@ -621,7 +621,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 1. 书籍简介（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📖 书籍简介", "yellow_background"))
+        blocks.append(_h2_colored("📖 书籍简介", "yellow"))
         if user_intro:
             blocks.extend(user_intro)
         else:
@@ -632,7 +632,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 2. 读书笔记（黄色 h2）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📝 读书笔记", "yellow_background"))
+        blocks.append(_h2_colored("📝 读书笔记", "yellow"))
         blocks.append(_paragraph(f"最后同步：{datetime.now().strftime('%Y-%m-%d %H:%M')}"))
 
         def _sort_key(cuid):
@@ -646,7 +646,7 @@ class NotionSyncer:
             # 章节标题（绿色背景 h3）
             blocks.append({"object": "block", "type": "heading_3",
                            "heading_3": {"rich_text": [{"type": "text", "text": {"content": f"📑 {ch_title}"}}],
-                                         "color": "green_background"}})
+                                         "color": "green"}})
 
             # 划线
             for hl in ch_my_hl.get(cuid, []):
@@ -680,7 +680,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 3. 书籍评价（黄色 h2）— 仅整本书评价
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("⭐ 书籍评价", "yellow_background"))
+        blocks.append(_h2_colored("⭐ 书籍评价", "yellow"))
         if book_reviews:
             for rv in book_reviews:
                 content = rv.get("content", "")
@@ -698,7 +698,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 4. 启迪思考（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("💭 启迪思考", "yellow_background"))
+        blocks.append(_h2_colored("💭 启迪思考", "yellow"))
         if user_thinking:
             blocks.extend(user_thinking)
         else:
@@ -706,38 +706,61 @@ class NotionSyncer:
         blocks.append(_divider())
 
         # ══════════════════════════════════════
-        # 5. 阅读统计（黄色 h2）
+        # 5. 阅读统计（黄色 h2）— 图表形式
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📊 阅读统计", "yellow_background"))
+        blocks.append(_h2_colored("📊 阅读统计", "yellow"))
 
         read_records = []
         if book_read_detail:
-            for key in ["readRecords", "records", "dailyRead", "readStat"]:
+            for key in ["readRecords", "records", "dailyRead", "readStat", "readingRecords", "dailyRecords"]:
                 records = book_read_detail.get(key, [])
                 if records and isinstance(records, list):
                     read_records = records
                     break
 
         if read_records:
-            blocks.append(_paragraph(f"共 {len(read_records)} 天有阅读记录"))
-            sorted_recs = sorted(
-                read_records,
-                key=lambda r: r.get("date", "") or r.get("day", ""),
-                reverse=True,
-            )[:10]
-            lines = []
+            # 按日期正序排列
+            sorted_recs = sorted(read_records, key=lambda r: r.get("date", "") or r.get("day", ""))
+            labels = []
+            data = []
             for rec in sorted_recs:
                 date = rec.get("date", "") or rec.get("day", "")
                 dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-                if dur:
-                    hm = f"{dur // 60}分钟" if dur < 3600 else f"{round(dur / 3600, 1)}h"
-                    lines.append(f"  ▸ {date} 阅读 {hm}")
-                else:
-                    lines.append(f"  ▸ {date}")
-            if lines:
-                blocks.append(_paragraph("\n".join(lines[:5])))
-                if len(lines) > 5:
-                    blocks.append(_paragraph(f"  ...还有 {len(read_records) - 5} 天记录"))
+                if date and dur:
+                    labels.append(date[-5:])  # 只显示 MM-DD
+                    data.append(round(dur / 60, 1))  # 转分钟
+
+            if len(data) > 1:
+                # 生成柱状图
+                chart_cfg = {
+                    "type": "bar",
+                    "data": {
+                        "labels": labels,
+                        "datasets": [{
+                            "label": "阅读时长（分钟）",
+                            "data": data,
+                            "backgroundColor": "#4A90D9",
+                            "borderRadius": 3,
+                        }],
+                    },
+                    "options": {
+                        "plugins": {
+                            "legend": {"display": False},
+                        },
+                        "scales": {
+                            "y": {"beginAtZero": True, "title": {"display": True, "text": "分钟"}},
+                            "x": {"ticks": {"maxRotation": 45, "font": {"size": 9}}},
+                        },
+                    },
+                }
+                chart_url = _chart_url(chart_cfg, width=680, height=300)
+                blocks.append(_image_block(chart_url, f"阅读记录 · 共 {len(read_records)} 天"))
+            elif len(data) == 1:
+                hm = f"{data[0]}分钟" if data[0] < 60 else f"{round(data[0]/60, 1)}h"
+                blocks.append(_paragraph(f"📅 {labels[0]} · 阅读 {hm}"))
+            else:
+                blocks.append(_paragraph(f"共 {len(read_records)} 天有阅读记录"))
+                blocks.append(_paragraph("（阅读时长数据不完整，无法生成图表）"))
         elif book_read_detail:
             total = book_read_detail.get("totalReadTime", 0) or book_read_detail.get("readingTime", 0)
             days = book_read_detail.get("readDays", 0)
