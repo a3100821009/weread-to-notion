@@ -304,6 +304,11 @@ class SyncManager:
 
             # 月度阅读数据是所有书共享的（API 返回跨书汇总），只调一次
             shared_read_detail = self.wr.get_book_read_detail("")
+            # 偶发性空数据，重试一次
+            if not shared_read_detail.get("readDays") and not shared_read_detail.get("readRecords"):
+                import time
+                time.sleep(1)
+                shared_read_detail = self.wr.get_book_read_detail("")
             read_days = shared_read_detail.get("readDays", 0)
             records_count = len(shared_read_detail.get("readRecords", []))
             console.print(f"  [dim]月度阅读数据: {read_days}天, {records_count}条记录[/dim]")
