@@ -22,14 +22,17 @@ GITHUB_STATS_BASE = "https://a3100821009.github.io/weread-to-notion/stats"
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
 
-def _text(content: str, bold: bool = False, color: str = "default") -> dict:
-    """生成 rich_text 对象"""
+def _text(content: str, bold: bool = False, color: str = "default", url: str = "") -> dict:
+    """生成 rich_text 对象，可选超链接"""
     annotations = {"bold": bold, "color": color}
-    return {
+    obj = {
         "type": "text",
         "text": {"content": content[:2000]},  # Notion 单段限 2000 字符
         "annotations": annotations,
     }
+    if url:
+        obj["text"]["link"] = {"url": url}
+    return obj
 
 
 def _rich(content: str, bold: bool = False) -> list[dict]:
@@ -60,9 +63,9 @@ def _quote(text: str) -> dict:
             "quote": {"rich_text": _rich(text)}}
 
 
-def _callout(text: str, emoji: str = "💡") -> dict:
+def _callout(text: str, emoji: str = "💡", color: str = "gray_background") -> dict:
     return {"object": "block", "type": "callout",
-            "callout": {"rich_text": _rich(text), "icon": {"type": "emoji", "emoji": emoji}}}
+            "callout": {"rich_text": _rich(text), "icon": {"type": "emoji", "emoji": emoji}, "color": color}}
 
 def _callout_green(text: str) -> dict:
     """绿色 callout — 自己的划线"""
@@ -892,23 +895,22 @@ class NotionSyncer:
             else:
                 return f"{m}分钟"
 
-        # ── 文字摘要 ──────────────────────────────
-        summary_lines = []
+        # ── 统计卡片（彩色 callout 块）────────────────
+        stat_data = []
         if book_total_sec > 0:
-            summary_lines.append(f"⏱ 本书累计    {_sec_to_hm(book_total_sec)}")
+            stat_data.append(("⏱", "累计阅读", _sec_to_hm(book_total_sec), "green_background"))
         if monthly_read_days > 0:
-            summary_lines.append(f"📅 本月阅读    {monthly_read_days} 天")
+            stat_data.append(("📅", "阅读天数", f"{monthly_read_days} 天", "blue_background"))
         if note_count > 0:
-            summary_lines.append(f"📝 笔记/划线    {note_count} 条")
+            stat_data.append(("📝", "笔记划线", f"{note_count} 条", "orange_background"))
         if max_day_sec > 0:
-            summary_lines.append(f"🏆 单日最久    {_sec_to_hm(max_day_sec)}（{max_day_label}）")
+            stat_data.append(("🏆", "单日最久", _sec_to_hm(max_day_sec), "purple_background"))
 
-        for line in summary_lines:
-            blocks.append(_paragraph(line))
+        for icon, label, value, color in stat_data:
+            blocks.append(_callout(f"{label}：{value}", emoji=icon, color=color))
 
         # ── 每日阅读进度条图 ────────────────────────────
         if day_data:
-            # 传给图表的是当月每日总阅读数据（非本书专属，而是当日总阅读）
             stat_chart_url = _build_reading_stat_chart(
                 total_sec=sum(d[1] for _, d in day_data),
                 read_days=monthly_read_days,
@@ -920,13 +922,18 @@ class NotionSyncer:
             )
             if stat_chart_url:
                 blocks.append(_image_block(stat_chart_url, "每日阅读记录"))
-        elif not summary_lines:
+
+        if not stat_data and not day_data:
             blocks.append(_paragraph("（阅读统计数据暂不可用）"))
 
-        # ── 嵌入 GitHub Pages 统计页面 ────────────────────
-        if book_id:
+        # ── 链接到完整统计页面 ────────────────────
+        if book_id and stat_data:
             stats_url = f"{GITHUB_STATS_BASE}/{book_id}.html"
-            blocks.append(_embed_block(stats_url))
+            link_rich = [_text("🔗 查看完整阅读统计 →", url=stats_url)]
+            blocks.append({
+                "object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": link_rich},
+            })
 
         # ══════════════════════════════════════
         # 写入 Notion
