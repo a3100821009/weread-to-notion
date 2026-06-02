@@ -834,8 +834,7 @@ class NotionSyncer:
         # ── 收集汇总数据 ─────────────────────────────────────
         total_sec = 0
         read_days = 0
-        note_count = (notebook_info.get("noteCount", 0) if notebook_info else 0) + \
-                     (notebook_info.get("reviewCount", 0) if notebook_info else 0)
+        note_count = len(highlights) + len(reviews)
         max_day_sec = 0
         max_day_label = ""
         start_label = ""
