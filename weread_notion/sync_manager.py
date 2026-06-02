@@ -314,16 +314,17 @@ class SyncManager:
 
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
-                    if (self.sync_highlights or self.sync_reviews) and nb_info:
-                        if note_count > 0 or review_count > 0:
-                            notes = self.wr.get_book_notes(book_id)
-                            social = None
+                    if self.sync_highlights or self.sync_reviews:
+                        # 无论是否有笔记/划线，都要写入 5 个模块（简介、笔记、评价、思考、统计）
+                        notes = self.wr.get_book_notes(book_id) if nb_info else {"highlights": [], "chapters": {}, "reviews": []}
+                        social = None
+                        if nb_info:
                             try:
                                 social = self.wr.get_book_social_notes(book_id)
                             except Exception:
                                 pass
-                            self.ns.sync_book_notes(page_id, notes, social, book_title,
-                                                     book_info, book_read_detail, progress_info)
+                        self.ns.sync_book_notes(page_id, notes, social, book_title,
+                                                 book_info, book_read_detail, progress_info)
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)

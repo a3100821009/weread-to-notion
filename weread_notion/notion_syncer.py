@@ -698,8 +698,8 @@ class NotionSyncer:
             if s.get("highlights") or s.get("reviews"):
                 all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
 
-        if not all_cuids and not book_reviews:
-            return
+        # 即使没有划线/评价，也要写入 5 个模块结构（简介、笔记、评价、思考、统计）
+        # 各模块内部会显示占位文字而非留空
 
         # ── 保留用户填写的内容 ────────────────────────────────────────────
         user_intro = []
