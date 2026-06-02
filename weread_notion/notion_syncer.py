@@ -537,9 +537,9 @@ class NotionSyncer:
     # ── 重写书籍子页面（新结构） ──────────────────────────────────────────
 
     def sync_book_notes(self, page_id, notes_data, social_data=None, book_title="",
-                        book_info=None, book_read_detail=None):
+                        book_info=None, book_read_detail=None, progress_info=None):
         """
-        重写书籍子页面，5 个 h2 模块（黄色），章节标题 h3（绿色）。
+        重写书籍子页面，5 个 h2 模块（黄色背景），章节标题 h3（绿色背景）。
         保留用户在 书籍简介 和 启迪思考 中自行填写的内容。
         """
         highlights = notes_data.get("highlights", [])
@@ -554,23 +554,39 @@ class NotionSyncer:
         for hl in sorted(highlights, key=lambda h: (h.get("chapterUid", 0), h.get("range", ""))):
             ch_my_hl[hl.get("chapterUid", 0)].append(hl)
 
-        # 想法关联
+        # 想法关联 & 按章节拆分评价
         review_by_abstract = {}
-        standalone_reviews = []
+        ch_reviews = defaultdict(list)   # {chapterUid: [review]}
+        book_reviews = []                # 整本书评价（无章节归属）
         for rv_item in reviews:
             rv = rv_item.get("review", {})
             abstract = rv.get("abstract", "")
             if abstract:
+                # 关联到具体划线的想法 → 随划线展示
                 review_by_abstract.setdefault(abstract, []).append(rv)
+            elif rv.get("chapterUid") is not None:
+                # 有章节归属的评价 → 放在该章节
+                ch_reviews[rv["chapterUid"]].append(rv)
+            elif rv.get("chapterName"):
+                # 从 chapterName 尝试匹配章节
+                matched = False
+                for cuid, ch in chapters_map.items():
+                    if ch.get("title") == rv["chapterName"]:
+                        ch_reviews[cuid].append(rv)
+                        matched = True
+                        break
+                if not matched:
+                    book_reviews.append(rv)
             else:
-                standalone_reviews.append(rv)
+                # 无章节归属 → 整本书评价
+                book_reviews.append(rv)
 
-        all_cuids = set(ch_my_hl.keys())
+        all_cuids = set(ch_my_hl.keys()) | set(ch_reviews.keys())
         for cuid, s in social.items():
             if s.get("highlights") or s.get("reviews"):
                 all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
 
-        if not all_cuids and not standalone_reviews:
+        if not all_cuids and not book_reviews:
             return
 
         # ── 保留用户填写的内容 ────────────────────────────────────────────
@@ -605,7 +621,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 1. 书籍简介（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📖 书籍简介", "yellow"))
+        blocks.append(_h2_colored("📖 书籍简介", "yellow_background"))
         if user_intro:
             blocks.extend(user_intro)
         else:
@@ -616,7 +632,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 2. 读书笔记（黄色 h2）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📝 读书笔记", "yellow"))
+        blocks.append(_h2_colored("📝 读书笔记", "yellow_background"))
         blocks.append(_paragraph(f"最后同步：{datetime.now().strftime('%Y-%m-%d %H:%M')}"))
 
         def _sort_key(cuid):
@@ -627,9 +643,12 @@ class NotionSyncer:
             ch_info = chapters_map.get(cuid, {})
             ch_title = ch_info.get("title", f"章节 {cuid}")
 
-            # 章节标题（绿色 h3）
-            blocks.append(_heading3(f"📑 {ch_title}"))
+            # 章节标题（绿色背景 h3）
+            blocks.append({"object": "block", "type": "heading_3",
+                           "heading_3": {"rich_text": [{"type": "text", "text": {"content": f"📑 {ch_title}"}}],
+                                         "color": "green_background"}})
 
+            # 划线
             for hl in ch_my_hl.get(cuid, []):
                 mark_text = hl.get("markText", "")
                 create_ts = hl.get("createTime", 0)
@@ -642,25 +661,34 @@ class NotionSyncer:
                 if date_str:
                     blocks.append(_paragraph(f"  🕐 {date_str}"))
 
-            if not ch_my_hl.get(cuid):
+            # 章节评价
+            for rv in ch_reviews.get(cuid, []):
+                content = rv.get("content", "")
+                star = rv.get("star", -1)
+                create_ts = rv.get("createTime", 0)
+                date_str = datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d") if create_ts else ""
+                rating_str = f" ⭐{star}/5" if star and star > 0 else ""
+                blocks.append(_callout(f"📝 章节评价{rating_str}\n{content}", "📝"))
+                if date_str:
+                    blocks.append(_paragraph(f"  🕐 {date_str}"))
+
+            if not ch_my_hl.get(cuid) and not ch_reviews.get(cuid):
                 blocks.append(_paragraph("（本章暂无划线）"))
 
         blocks.append(_divider())
 
         # ══════════════════════════════════════
-        # 3. 书籍评价（黄色 h2）
+        # 3. 书籍评价（黄色 h2）— 仅整本书评价
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("⭐ 书籍评价", "yellow"))
-        if standalone_reviews:
-            for rv in standalone_reviews:
+        blocks.append(_h2_colored("⭐ 书籍评价", "yellow_background"))
+        if book_reviews:
+            for rv in book_reviews:
                 content = rv.get("content", "")
-                chapter_name = rv.get("chapterName", "")
                 star = rv.get("star", -1)
                 create_ts = rv.get("createTime", 0)
                 date_str = datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d") if create_ts else ""
-                label = f"【{chapter_name}】" if chapter_name else "【整本书评】"
                 rating_str = f" ⭐{star}/5" if star and star > 0 else ""
-                blocks.append(_callout(f"{label}{rating_str}\n{content}", "📝"))
+                blocks.append(_callout(f"整本书评{rating_str}\n{content}", "📝"))
                 if date_str:
                     blocks.append(_paragraph(f"🕐 {date_str}"))
         else:
@@ -670,7 +698,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 4. 启迪思考（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("💭 启迪思考", "yellow"))
+        blocks.append(_h2_colored("💭 启迪思考", "yellow_background"))
         if user_thinking:
             blocks.extend(user_thinking)
         else:
@@ -680,7 +708,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         # 5. 阅读统计（黄色 h2）
         # ══════════════════════════════════════
-        blocks.append(_h2_colored("📊 阅读统计", "yellow"))
+        blocks.append(_h2_colored("📊 阅读统计", "yellow_background"))
 
         read_records = []
         if book_read_detail:
@@ -721,7 +749,22 @@ class NotionSyncer:
                 parts.append(f"总时长：{hm}")
             blocks.append(_paragraph(" · ".join(parts) if parts else "（阅读统计数据暂不可用）"))
         else:
-            blocks.append(_paragraph("（阅读统计数据暂不可用）"))
+            # 从阅读进度数据兜底
+            if progress_info and progress_info.get("book"):
+                p = progress_info["book"]
+                reading_time = 0
+                for field in ["readTime", "readingTime", "totalReadTime", "duration"]:
+                    rt = p.get(field, 0)
+                    if rt and rt > 0:
+                        reading_time = rt
+                        break
+                if reading_time > 0:
+                    hm = f"{reading_time // 60}分钟" if reading_time < 3600 else f"{round(reading_time / 3600, 1)}h"
+                    blocks.append(_paragraph(f"阅读时长：{hm}"))
+                else:
+                    blocks.append(_paragraph("（阅读统计数据暂不可用）"))
+            else:
+                blocks.append(_paragraph("（阅读统计数据暂不可用）"))
 
         # ══════════════════════════════════════
         # 写入 Notion
