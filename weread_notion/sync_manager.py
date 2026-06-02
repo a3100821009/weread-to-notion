@@ -306,7 +306,6 @@ class SyncManager:
                 """在线程中同步单本书，返回 (book_id, 是否成功, 错误信息)"""
                 book_id = book_shelf["bookId"]
                 book_title = book_shelf.get("title", book_id)
-                try:
                 book_info = self.wr.get_book_info(book_id)
                 progress_info = self.wr.get_book_progress(book_id)
                 nb_info = notebook_map.get(book_id)
@@ -352,6 +351,7 @@ class SyncManager:
                     "lastSynced": datetime.now().isoformat(),
                 }
 
+                try:
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
                     if self.sync_highlights or self.sync_reviews:
