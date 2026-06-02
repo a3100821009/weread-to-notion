@@ -870,18 +870,11 @@ class NotionSyncer:
 
         # ── 计算单日最久 ─────────────────────────────
         max_day_sec = 0
-        max_day_label = ""
-        day_data = []
         if read_records and isinstance(read_records, list):
             for rec in read_records:
-                d = rec.get("date", "") or rec.get("day", "")
                 dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-                if d and dur and dur > 0:
-                    day_data.append((d[-5:] if len(d) >= 5 else d, int(dur)))
-            if day_data:
-                best = max(day_data, key=lambda x: x[1])
-                max_day_sec = best[1]
-                max_day_label = best[0]
+                if dur and dur > 0:
+                    max_day_sec = max(max_day_sec, int(dur))
 
         def _sec_to_hm(sec: int) -> str:
             if sec <= 0:
@@ -895,39 +888,23 @@ class NotionSyncer:
             else:
                 return f"{m}分钟"
 
-        # ── 统计卡片（彩色 callout 块）────────────────
-        stat_data = []
-        if book_total_sec > 0:
-            stat_data.append(("⏱", "累计阅读", _sec_to_hm(book_total_sec), "green_background"))
-        if monthly_read_days > 0:
-            stat_data.append(("📅", "阅读天数", f"{monthly_read_days} 天", "blue_background"))
-        if note_count > 0:
-            stat_data.append(("📝", "笔记划线", f"{note_count} 条", "orange_background"))
-        if max_day_sec > 0:
-            stat_data.append(("🏆", "单日最久", _sec_to_hm(max_day_sec), "purple_background"))
+        # ── 统计卡片（始终渲染 4 张，数据为 0 时显示 "-"）─
+        cards = [
+            ("⏱", "累计阅读", _sec_to_hm(book_total_sec) if book_total_sec > 0 else "-",
+             "green_background"),
+            ("📅", "阅读天数", f"{monthly_read_days} 天" if monthly_read_days > 0 else "-",
+             "blue_background"),
+            ("📝", "笔记划线", f"{note_count} 条" if note_count > 0 else "-",
+             "orange_background"),
+            ("🏆", "单日最久", _sec_to_hm(max_day_sec) if max_day_sec > 0 else "-",
+             "purple_background"),
+        ]
 
-        for icon, label, value, color in stat_data:
+        for icon, label, value, color in cards:
             blocks.append(_callout(f"{label}：{value}", emoji=icon, color=color))
 
-        # ── 每日阅读进度条图 ────────────────────────────
-        if day_data:
-            stat_chart_url = _build_reading_stat_chart(
-                total_sec=sum(d[1] for _, d in day_data),
-                read_days=monthly_read_days,
-                note_count=note_count,
-                max_day_sec=max_day_sec,
-                max_day_label=max_day_label,
-                start_label="",
-                read_records=read_records,
-            )
-            if stat_chart_url:
-                blocks.append(_image_block(stat_chart_url, "每日阅读记录"))
-
-        if not stat_data and not day_data:
-            blocks.append(_paragraph("（阅读统计数据暂不可用）"))
-
         # ── 链接到完整统计页面 ────────────────────
-        if book_id and stat_data:
+        if book_id:
             stats_url = f"{GITHUB_STATS_BASE}/{book_id}.html"
             link_rich = [_text("🔗 查看完整阅读统计 →", url=stats_url)]
             blocks.append({
