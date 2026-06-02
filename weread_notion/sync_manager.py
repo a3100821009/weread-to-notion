@@ -16,6 +16,7 @@ from rich.table import Table
 
 from weread_notion.weread_client import WeReadClient
 from weread_notion.notion_syncer import NotionSyncer
+from weread_notion.stats_generator import save_book_stats
 
 console = Console()
 
@@ -34,11 +35,15 @@ def save_state(state: dict):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def push_covers_to_github():
-    """将 covers/ 目录的变更提交并推送到 GitHub"""
+def push_assets_to_github():
+    """将 covers/ + stats/ 目录的变更提交并推送到 GitHub"""
     covers_dir = Path("covers")
-    if not covers_dir.exists() or not any(covers_dir.iterdir()):
-        return  # 没有封面文件，跳过
+    stats_dir = Path("stats")
+    has_covers = covers_dir.exists() and any(covers_dir.iterdir())
+    has_stats = stats_dir.exists() and any(stats_dir.iterdir())
+
+    if not has_covers and not has_stats:
+        return  # 没有需要推送的文件
 
     try:
         # 配置 git（GitHub Actions 环境）
@@ -50,11 +55,13 @@ def push_covers_to_github():
             ["git", "config", "user.email", "sync@weread-to-notion.local"],
             capture_output=True, timeout=10,
         )
-        # 添加封面文件 + 同步状态（持久化 book_pages 映射）
-        subprocess.run(
-            ["git", "add", "covers/", "sync_state.json"],
-            capture_output=True, timeout=10,
-        )
+        # 添加封面 + 统计 + 同步状态
+        add_cmd = ["git", "add", "sync_state.json"]
+        if has_covers:
+            add_cmd.append("covers/")
+        if has_stats:
+            add_cmd.append("stats/")
+        subprocess.run(add_cmd, capture_output=True, timeout=10)
         # 检查是否有变更
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
@@ -66,7 +73,7 @@ def push_covers_to_github():
         # 提交并推送到 GitHub（使用 HEAD:branch 绕过 detached HEAD 限制）
         branch = os.environ.get("GITHUB_REF_NAME", "main")
         subprocess.run(
-            ["git", "commit", "-m", "Update book covers & sync state"],
+            ["git", "commit", "-m", "Update covers, stats & sync state"],
             capture_output=True, timeout=10,
         )
         push_result = subprocess.run(
@@ -75,11 +82,11 @@ def push_covers_to_github():
         )
         if push_result.returncode != 0:
             stderr = push_result.stderr.decode()[:300]
-            console.print(f"[red]✗ 封面推送失败: {stderr}[/red]")
+            console.print(f"[red]✗ 推送失败: {stderr}[/red]")
             return
-        console.print(f"[green]✓ 封面 + 状态已推送到 GitHub ({branch})[/green]")
+        console.print(f"[green]✓ 素材已推送到 GitHub ({branch})[/green]")
     except Exception as e:
-        console.print(f"[dim]封面推送异常: {e}[/dim]")
+        console.print(f"[dim]推送异常: {e}[/dim]")
 
 
 class SyncManager:
@@ -229,6 +236,9 @@ class SyncManager:
         # 4. 等待封面下载完成 → 推送 GitHub → 更新 Notion
         self._sync_all_covers()
 
+        # 5. 生成阅读统计 HTML 页面 → 推送 GitHub
+        self._sync_all_stats()
+
         console.print("\n[bold green]✅ 同步完成！[/bold green]")
 
     def _sync_shelf(self):
@@ -275,10 +285,13 @@ class SyncManager:
                 cover_url = shelf_cover or existing_meta.get("coverUrl", "")
                 self.state.setdefault("book_meta", {})[book_id] = {
                     "title": book_title,
+                    "author": existing_meta.get("author", ""),
                     "readingTime": existing_meta.get("readingTime", 0),
                     "coverUrl": cover_url,
                     "noteCount": existing_meta.get("noteCount", 0),
                     "reviewCount": existing_meta.get("reviewCount", 0),
+                    "progress": existing_meta.get("progress", 0),
+                    "startDate": existing_meta.get("startDate", ""),
                     "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
                 }
                 skip_count += 1
@@ -294,23 +307,50 @@ class SyncManager:
                 book_id = book_shelf["bookId"]
                 book_title = book_shelf.get("title", book_id)
                 try:
-                    book_info = self.wr.get_book_info(book_id)
-                    progress_info = self.wr.get_book_progress(book_id)
-                    nb_info = notebook_map.get(book_id)
-                    cover_url = book_info.get("cover", "")
-                    reading_time = self._extract_reading_time(book_shelf, progress_info)
-                    note_count = nb_info.get("noteCount", 0) if nb_info else 0
-                    review_count = nb_info.get("reviewCount", 0) if nb_info else 0
+                book_info = self.wr.get_book_info(book_id)
+                progress_info = self.wr.get_book_progress(book_id)
+                nb_info = notebook_map.get(book_id)
+                cover_url = book_info.get("cover", "")
+                author = book_info.get("author", "")
+                reading_time = self._extract_reading_time(book_shelf, progress_info)
+                note_count = nb_info.get("noteCount", 0) if nb_info else 0
+                review_count = nb_info.get("reviewCount", 0) if nb_info else 0
 
-                    # 获取书本阅读详情（含首次阅读日期）
-                    book_read_detail = self.wr.get_book_read_detail(book_id)
+                # 提取阅读进度（0-100）和首次阅读日期
+                progress_raw = 0
+                start_date = ""
+                if progress_info and progress_info.get("book"):
+                    p = progress_info["book"]
+                    progress_raw = p.get("progress", 0)
+                    for fld in ["firstReadTime", "firstOpenTime", "createTime"]:
+                        ft = p.get(fld, 0)
+                        if ft and ft > 0:
+                            start_date = WeReadClient.ts_to_date(ft)
+                            break
+                if not start_date:
+                    for fld in ["createTime", "addTime"]:
+                        ft = book_info.get(fld, 0)
+                        if ft and ft > 0:
+                            start_date = WeReadClient.ts_to_date(ft)
+                            break
+                if not start_date and book_shelf:
+                    for fld in ["createTime", "addTime", "readUpdateTime"]:
+                        ft = book_shelf.get(fld, 0)
+                        if ft and ft > 0:
+                            start_date = WeReadClient.ts_to_date(ft)
+                            break
 
-                    self.state.setdefault("book_meta", {})[book_id] = {
-                        "title": book_title,
-                        "readingTime": reading_time, "coverUrl": cover_url,
-                        "noteCount": note_count, "reviewCount": review_count,
-                        "lastSynced": datetime.now().isoformat(),
-                    }
+                # 获取书本阅读详情（含首次阅读日期）
+                book_read_detail = self.wr.get_book_read_detail(book_id)
+
+                self.state.setdefault("book_meta", {})[book_id] = {
+                    "title": book_title,
+                    "author": author,
+                    "readingTime": reading_time, "coverUrl": cover_url,
+                    "noteCount": note_count, "reviewCount": review_count,
+                    "progress": progress_raw, "startDate": start_date,
+                    "lastSynced": datetime.now().isoformat(),
+                }
 
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
@@ -407,7 +447,7 @@ class SyncManager:
 
         # 推送到 GitHub
         if success > 0 or have > 0:
-            push_covers_to_github()
+            push_assets_to_github()
 
         # 更新 Notion 页面封面
         updated = self.ns.update_page_covers()
@@ -415,3 +455,58 @@ class SyncManager:
             console.print(f"  [green]✓ Notion 封面已更新 {updated} 本[/green]")
         else:
             console.print("  [dim]封面均就绪，无需更新[/dim]")
+
+    def _sync_all_stats(self):
+        """为所有书籍生成阅读统计 HTML 页面 → 推送 GitHub"""
+        from datetime import datetime
+
+        book_meta = self.state.get("book_meta", {})
+        if not book_meta:
+            console.print("\n[dim]▶ 阅读统计：无书籍记录，跳过[/dim]")
+            return
+
+        # 获取本月每日阅读数据（跨书籍汇总，所有书共享）
+        daily_records = []
+        try:
+            monthly_data = self.wr.get_read_stats(mode="monthly")
+            read_times = monthly_data.get("readTimes", {})
+            for ts, sec in read_times.items():
+                dt = datetime.fromtimestamp(int(ts))
+                daily_records.append({
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "sec": int(sec),
+                })
+            daily_records.sort(key=lambda r: r["date"])
+        except Exception as e:
+            console.print(f"[dim]  获取每日阅读数据失败: {e}，将跳过每日进度条[/dim]")
+
+        console.print(f"\n[yellow]▶ 生成阅读统计页面...[/yellow] (共 [cyan]{len(book_meta)}[/cyan] 本)")
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        success = 0
+        for book_id, meta in book_meta.items():
+            title = meta.get("title", book_id)
+            try:
+                result = save_book_stats(
+                    book_id=book_id,
+                    title=title,
+                    author=meta.get("author", ""),
+                    total_read_sec=meta.get("readingTime", 0),
+                    progress=meta.get("progress", 0),
+                    note_count=meta.get("noteCount", 0),
+                    review_count=meta.get("reviewCount", 0),
+                    start_date=meta.get("startDate", ""),
+                    daily_records=daily_records,
+                    generated_at=generated_at,
+                )
+                if result:
+                    success += 1
+            except Exception as e:
+                console.print(f"  [red]✗ {title[:20]}: {e}[/red]")
+
+        console.print(f"  [green]✓ 已生成 {success}/{len(book_meta)} 本阅读统计[/green]")
+
+        # 推送 stats/ 到 GitHub
+        stats_dir = Path("stats")
+        if stats_dir.exists() and any(stats_dir.iterdir()):
+            push_assets_to_github()
