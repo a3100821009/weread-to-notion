@@ -17,6 +17,7 @@ from notion_client import Client
 COVERS_DIR = Path("covers")
 # 仓库已公开，使用 GitHub raw URL
 GITHUB_COVER_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
+GITHUB_STATS_BASE = "https://a3100821009.github.io/weread-to-notion/stats"
 
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
@@ -137,6 +138,15 @@ def _image_block(url: str, caption: str = "") -> dict:
     if caption:
         block["image"]["caption"] = _rich(caption)
     return block
+
+
+def _embed_block(url: str) -> dict:
+    """生成 Notion 嵌入块（外部 URL）"""
+    return {
+        "object": "block",
+        "type": "embed",
+        "embed": {"url": url},
+    }
 
 
 def _chart_url(config: dict, width: int = 600, height: int = 400) -> str:
@@ -659,7 +669,8 @@ class NotionSyncer:
     # ── 重写书籍子页面（新结构） ──────────────────────────────────────────
 
     def sync_book_notes(self, page_id, notes_data, social_data=None, book_title="",
-                        book_info=None, book_read_detail=None, progress_info=None):
+                        book_info=None, book_read_detail=None, progress_info=None,
+                        book_id=""):
         """
         重写书籍子页面，5 个 h2 模块（黄色背景），章节标题 h3（绿色背景）。
         保留用户在 书籍简介 和 启迪思考 中自行填写的内容。
@@ -835,71 +846,41 @@ class NotionSyncer:
         blocks.append(_divider())
 
         # ══════════════════════════════════════
-        # 5. 阅读统计（黄色 h2）— 仿微信读书App样式
+        # 5. 阅读统计（黄色 h2）
         # ══════════════════════════════════════
         blocks.append(_h2_colored("📊 阅读统计", "yellow"))
 
-        # ── 收集每日阅读记录 ────────────────────────────────
-        read_records = []
-        if book_read_detail:
-            for key in ["readRecords", "records", "dailyRead", "readStat", "readingRecords", "dailyRecords"]:
-                records = book_read_detail.get(key, [])
-                if records and isinstance(records, list):
-                    read_records = records
-                    break
-
-        # ── 收集汇总数据 ─────────────────────────────────────
-        total_sec = 0
-        read_days = 0
-        note_count = len(highlights) + len(reviews)
-        max_day_sec = 0
-        max_day_label = ""
-        start_label = ""
-
-        # 从 book_read_detail 取汇总
-        if book_read_detail:
-            for f in ["totalReadTime", "readingTime", "totalTime"]:
-                v = book_read_detail.get(f, 0)
-                if v and v > 0:
-                    total_sec = v
-                    break
-            for f in ["readDays", "readingDays", "days"]:
-                v = book_read_detail.get(f, 0)
-                if v and v > 0:
-                    read_days = v
-                    break
-
-        # 从每日记录补充 & 算最长单日
-        if read_records:
-            day_data = []
-            for rec in read_records:
-                d = rec.get("date", "") or rec.get("day", "")
-                dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-                if dur and dur > 0:
-                    day_data.append((d, dur))
-            if day_data:
-                if total_sec == 0:
-                    total_sec = sum(v for _, v in day_data)
-                if read_days == 0:
-                    read_days = len(day_data)
-                best = max(day_data, key=lambda x: x[1])
-                max_day_sec = best[1]
-                max_day_label = best[0][-5:] if len(best[0]) >= 5 else best[0]
-                # 开始日期
-                sorted_days = sorted(day_data, key=lambda x: x[0])
-                start_label = sorted_days[0][0][-5:] if sorted_days else ""
-
-        # 从阅读进度兜底
-        if total_sec == 0 and progress_info and progress_info.get("book"):
+        # ── 本书累计阅读时长（来自 getprogress）─────────
+        book_total_sec = 0
+        if progress_info and progress_info.get("book"):
             p = progress_info["book"]
             for f in ["readTime", "readingTime", "totalReadTime", "duration"]:
                 v = p.get(f, 0)
                 if v and v > 0:
-                    total_sec = v
+                    book_total_sec = int(v)
                     break
 
+        # ── 当月每日阅读记录（来自 readdata/detail monthly）─
+        read_records = (book_read_detail or {}).get("readRecords", [])
+        monthly_read_days = (book_read_detail or {}).get("readDays", 0)
+        note_count = len(highlights) + len(reviews)
+
+        # ── 计算单日最久 ─────────────────────────────
+        max_day_sec = 0
+        max_day_label = ""
+        day_data = []
+        if read_records and isinstance(read_records, list):
+            for rec in read_records:
+                d = rec.get("date", "") or rec.get("day", "")
+                dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
+                if d and dur and dur > 0:
+                    day_data.append((d[-5:] if len(d) >= 5 else d, int(dur)))
+            if day_data:
+                best = max(day_data, key=lambda x: x[1])
+                max_day_sec = best[1]
+                max_day_label = best[0]
+
         def _sec_to_hm(sec: int) -> str:
-            """秒 → 'X小时Y分钟' 或 'X分钟'"""
             if sec <= 0:
                 return "0分钟"
             h = sec // 3600
@@ -911,37 +892,41 @@ class NotionSyncer:
             else:
                 return f"{m}分钟"
 
-        # ── 文字版汇总（仿App 4格统计卡片）──────────────────────
+        # ── 文字摘要 ──────────────────────────────
         summary_lines = []
-        if total_sec > 0:
-            summary_lines.append(f"⏱ 累计时长    {_sec_to_hm(total_sec)}")
-            if start_label:
-                summary_lines[-1] += f"    （{start_label} 开始阅读）"
-        if read_days > 0:
-            summary_lines.append(f"📅 阅读天数    {read_days} 天")
+        if book_total_sec > 0:
+            summary_lines.append(f"⏱ 本书累计    {_sec_to_hm(book_total_sec)}")
+        if monthly_read_days > 0:
+            summary_lines.append(f"📅 本月阅读    {monthly_read_days} 天")
         if note_count > 0:
             summary_lines.append(f"📝 笔记/划线    {note_count} 条")
         if max_day_sec > 0:
-            max_label = f"（{max_day_label}）" if max_day_label else ""
-            summary_lines.append(f"🏆 单日最久    {_sec_to_hm(max_day_sec)} {max_label}")
+            summary_lines.append(f"🏆 单日最久    {_sec_to_hm(max_day_sec)}（{max_day_label}）")
 
         for line in summary_lines:
             blocks.append(_paragraph(line))
 
-        # ── 每日阅读进度条图 ─────────────────────────────────────
-        stat_chart_url = _build_reading_stat_chart(
-            total_sec=total_sec,
-            read_days=read_days,
-            note_count=note_count,
-            max_day_sec=max_day_sec,
-            max_day_label=max_day_label,
-            start_label=start_label,
-            read_records=read_records,
-        )
-        if stat_chart_url:
-            blocks.append(_image_block(stat_chart_url, "每日阅读记录"))
+        # ── 每日阅读进度条图 ────────────────────────────
+        if day_data:
+            # 传给图表的是当月每日总阅读数据（非本书专属，而是当日总阅读）
+            stat_chart_url = _build_reading_stat_chart(
+                total_sec=sum(d[1] for _, d in day_data),
+                read_days=monthly_read_days,
+                note_count=note_count,
+                max_day_sec=max_day_sec,
+                max_day_label=max_day_label,
+                start_label="",
+                read_records=read_records,
+            )
+            if stat_chart_url:
+                blocks.append(_image_block(stat_chart_url, "每日阅读记录"))
         elif not summary_lines:
             blocks.append(_paragraph("（阅读统计数据暂不可用）"))
+
+        # ── 嵌入 GitHub Pages 统计页面 ────────────────────
+        if book_id:
+            stats_url = f"{GITHUB_STATS_BASE}/{book_id}.html"
+            blocks.append(_embed_block(stats_url))
 
         # ══════════════════════════════════════
         # 写入 Notion

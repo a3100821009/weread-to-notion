@@ -364,7 +364,8 @@ class SyncManager:
                             except Exception:
                                 pass
                         self.ns.sync_book_notes(page_id, notes, social, book_title,
-                                                 book_info, book_read_detail, progress_info)
+                                                 book_info, book_read_detail, progress_info,
+                                                 book_id=book_id)
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)
