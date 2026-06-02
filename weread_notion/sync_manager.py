@@ -304,6 +304,9 @@ class SyncManager:
 
             # 月度阅读数据是所有书共享的（API 返回跨书汇总），只调一次
             shared_read_detail = self.wr.get_book_read_detail("")
+            read_days = shared_read_detail.get("readDays", 0)
+            records_count = len(shared_read_detail.get("readRecords", []))
+            console.print(f"  [dim]月度阅读数据: {read_days}天, {records_count}条记录[/dim]")
 
             def sync_one(book_shelf: dict) -> tuple:
                 """在线程中同步单本书，返回 (book_id, 是否成功, 错误信息)"""
