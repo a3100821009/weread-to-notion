@@ -302,6 +302,9 @@ class SyncManager:
         if sync_books:
             console.print(f"  并发同步 [cyan]{len(sync_books)}[/cyan] 本（10 线程）...")
 
+            # 月度阅读数据是所有书共享的（API 返回跨书汇总），只调一次
+            shared_read_detail = self.wr.get_book_read_detail("")
+
             def sync_one(book_shelf: dict) -> tuple:
                 """在线程中同步单本书，返回 (book_id, 是否成功, 错误信息)"""
                 book_id = book_shelf["bookId"]
@@ -339,8 +342,8 @@ class SyncManager:
                             start_date = WeReadClient.ts_to_date(ft)
                             break
 
-                # 获取书本阅读详情（含首次阅读日期）
-                book_read_detail = self.wr.get_book_read_detail(book_id)
+                # 书本阅读详情——所有书共享月度汇总数据
+                book_read_detail = shared_read_detail
 
                 self.state.setdefault("book_meta", {})[book_id] = {
                     "title": book_title,
