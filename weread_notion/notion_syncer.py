@@ -76,9 +76,14 @@ def _callout_discuss(text: str) -> dict:
     return _callout(text, "💬")
 
 def _heading_colored(text: str, color: str) -> dict:
-    """带颜色的 H3 标题"""
+    """带颜色的 H3 标题（块级 + 富文本注解双重设色）"""
+    rich_text = [{
+        "type": "text",
+        "text": {"content": text},
+        "annotations": {"bold": False, "color": color},
+    }]
     return {"object": "block", "type": "heading_3",
-            "heading_3": {"rich_text": _rich(text), "color": color}}
+            "heading_3": {"rich_text": rich_text, "color": color}}
 
 
 def _divider() -> dict:
@@ -360,11 +365,16 @@ def _build_reading_stat_chart(
 # ── Notion 的 heading_2 着色辅助 ─────────────────────────────────────────
 
 def _h2_colored(text: str, color: str) -> dict:
-    """带颜色的 H2 标题"""
+    """带颜色的 H2 标题（块级 + 富文本注解双重设色）"""
+    rich_text = [{
+        "type": "text",
+        "text": {"content": text},
+        "annotations": {"bold": True, "color": color},
+    }]
     return {
         "object": "block",
         "type": "heading_2",
-        "heading_2": {"rich_text": _rich(text, bold=True), "color": color},
+        "heading_2": {"rich_text": rich_text, "color": color},
     }
 
 
@@ -752,12 +762,22 @@ class NotionSyncer:
             return ch.get("chapterIdx", 9999)
 
         for cuid in sorted(all_cuids, key=_sort_key):
+            has_hl = bool(ch_my_hl.get(cuid))
+            has_rv = bool(ch_reviews.get(cuid))
+            if not has_hl and not has_rv:
+                continue  # 没有划线和评价的章节直接跳过，不显示
+
             ch_info = chapters_map.get(cuid, {})
             ch_title = ch_info.get("title", f"章节 {cuid}")
 
-            # 章节标题（绿色背景 h3）
+            # 章节标题（绿色 h3，双重设色）
+            ch_rich = [{
+                "type": "text",
+                "text": {"content": f"📑 {ch_title}"},
+                "annotations": {"bold": False, "color": "green"},
+            }]
             blocks.append({"object": "block", "type": "heading_3",
-                           "heading_3": {"rich_text": [{"type": "text", "text": {"content": f"📑 {ch_title}"}}],
+                           "heading_3": {"rich_text": ch_rich,
                                          "color": "green"}})
 
             # 划线
@@ -783,9 +803,6 @@ class NotionSyncer:
                 blocks.append(_callout(f"📝 章节评价{rating_str}\n{content}", "📝"))
                 if date_str:
                     blocks.append(_paragraph(f"  🕐 {date_str}"))
-
-            if not ch_my_hl.get(cuid) and not ch_reviews.get(cuid):
-                blocks.append(_paragraph("（本章暂无划线）"))
 
         blocks.append(_divider())
 
