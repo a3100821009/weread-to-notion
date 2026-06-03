@@ -690,12 +690,32 @@ class NotionSyncer:
     def _sanitize_block(block: dict) -> dict:
         """
         从 Notion API 返回的原始 block 中提取有效字段。
-        去除 id / has_children / parent / created_time / archived 等元数据，
-        只保留 object、type 和 type 对应的内容字段。
+        只保留 object、type、以及 type 对应的已知有效子字段，
+        移除 id / has_children / parent / created_time / archived 等元数据。
         """
         bt = block.get("type", "paragraph")
         content = block.get(bt, {})
-        return {"object": "block", "type": bt, bt: content}
+        # 仅保留类型特定的有效子字段，移除意外混入的 icon 等
+        allowed_keys = {
+            "paragraph": {"rich_text", "color", "children"},
+            "heading_1": {"rich_text", "color", "is_toggleable"},
+            "heading_2": {"rich_text", "color", "is_toggleable"},
+            "heading_3": {"rich_text", "color", "is_toggleable"},
+            "callout": {"rich_text", "icon", "color", "children"},
+            "divider": set(),
+            "column_list": {"children"},
+            "column": {"children"},
+            "bulleted_list_item": {"rich_text", "color", "children"},
+            "numbered_list_item": {"rich_text", "color", "children"},
+            "to_do": {"rich_text", "checked", "color", "children"},
+            "toggle": {"rich_text", "color", "children"},
+            "code": {"rich_text", "language", "caption"},
+            "quote": {"rich_text", "color", "children"},
+            "image": {"type", "external", "file", "caption"},
+        }
+        keep = allowed_keys.get(bt, set(content.keys()))
+        cleaned = {k: v for k, v in content.items() if k in keep}
+        return {"object": "block", "type": bt, bt: cleaned}
 
     def _clear_page_content(self, page_id: str):
         """删除页面内所有块（带重试）"""
