@@ -39,14 +39,13 @@ def cli():
 @click.option("--parent-page-id", envvar="NOTION_PARENT_PAGE_ID", help="Notion 父页面 ID")
 @click.option("--no-highlights", is_flag=True, default=False, help="跳过划线同步")
 @click.option("--no-reviews", is_flag=True, default=False, help="跳过想法同步")
-@click.option("--no-stats", is_flag=True, default=False, help="跳过阅读统计同步")
 @click.option("--full", is_flag=True, default=False, help="全量同步（忽略增量状态）")
-@click.option("--delay", default=0.3, show_default=True, help="API 请求间隔（秒）")
+@click.option("--delay", default=0.1, show_default=True, help="API 请求间隔（秒）")
 def sync_cmd(
     weread_key, notion_token, parent_page_id,
-    no_highlights, no_reviews, no_stats, full, delay
+    no_highlights, no_reviews, full, delay
 ):
-    """执行同步：书架、划线、想法、阅读统计 → Notion"""
+    """执行同步：书架、划线、想法 → Notion"""
     weread_key = _require_env("WEREAD_API_KEY", weread_key)
     notion_token = _require_env("NOTION_TOKEN", notion_token)
     parent_page_id = _require_env("NOTION_PARENT_PAGE_ID", parent_page_id)
@@ -59,7 +58,6 @@ def sync_cmd(
         parent_page_id=parent_page_id,
         sync_highlights=not no_highlights,
         sync_reviews=not no_reviews,
-        sync_stats=not no_stats,
         request_delay=delay,
         incremental=not full,
     )

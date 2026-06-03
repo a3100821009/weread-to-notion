@@ -35,12 +35,9 @@ def save_state(state: dict):
 
 
 def push_assets_to_github():
-    """将 covers/ 目录的变更提交并推送到 GitHub"""
+    """将 covers/ 和 sync_state.json 的变更提交并推送到 GitHub"""
     covers_dir = Path("covers")
     has_covers = covers_dir.exists() and any(covers_dir.iterdir())
-
-    if not has_covers:
-        return  # 没有需要推送的文件
 
     try:
         # 配置 git（GitHub Actions 环境）
@@ -349,9 +346,13 @@ class SyncManager:
                 try:
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
-                    # 如果该书的页面内容已经写入过，跳过 sync_book_notes 避免重复 Notion 调用
+                    # 是否需要写入/更新页面内容
+                    needs_content = self.sync_highlights or self.sync_reviews
                     already_written = self.state.get("book_meta", {}).get(book_id, {}).get("content_written", False)
-                    if not already_written and (self.sync_highlights or self.sync_reviews):
+
+                    if needs_content and (nb_info or not already_written):
+                        # 有笔记的书 → 每次都同步（划线/想法会变化）
+                        # 无笔记的书 → 只写一次基础结构（content_written 后跳过）
                         if nb_info:
                             notes = self.wr.get_book_notes(book_id)
                             social = None
@@ -360,13 +361,11 @@ class SyncManager:
                             except Exception:
                                 pass
                         else:
-                            # 无笔记的书使用空数据，sync_book_notes 仍会写入基础结构
                             notes = {"highlights": [], "reviews": [], "chapters": {}}
                             social = None
                         self.ns.sync_book_notes(page_id, notes, social, book_title,
                                                  book_info, book_read_detail, progress_info,
                                                  book_id=book_id, start_date=start_date)
-                        # 标记内容已写入，后续增量跳过
                         self.state.setdefault("book_meta", {})[book_id]["content_written"] = True
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)

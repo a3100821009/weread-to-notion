@@ -114,6 +114,9 @@ def _h2_colored(text: str, color: str) -> dict:
 
 # ── NotionSyncer ─────────────────────────────────────────────────────────────
 
+# 同步写入的 5 个区块标题，用于识别哪些 block 属于同步内容
+SYNC_H2_TITLES = {"📖 书籍简介", "📝 读书笔记", "⭐ 书籍评价", "💭 启迪思考", "📊 阅读统计"}
+
 class NotionSyncer:
     """
     负责将微信阅读数据写入 Notion。
@@ -516,9 +519,8 @@ class NotionSyncer:
                     user_intro.append(blk)
                 elif section == "thinking":
                     user_thinking.append(blk)
-            # 第一轮全量同步时所有页面均为空白，保留旧内容无意义。
-            # 若旧 block 携带了 API 不接受的额外字段（如 paragraph.icon），
-            # 直接跳过保留，改用干净的默认段落。
+            # 保留用户在 书籍简介 和 启迪思考 中自行填写的内容
+            # 用白名单清洗避免旧 block 携带 API 不接受的额外字段
         except Exception:
             pass
 
@@ -528,9 +530,11 @@ class NotionSyncer:
         # 1. 书籍简介（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
         blocks.append(_h2_colored("📖 书籍简介", "yellow"))
-        # 暂不保留旧 block（旧 block 可能携带 API 不接受的额外字段）
-        intro = (book_info or {}).get("intro", "") or (book_info or {}).get("description", "")
-        blocks.append(_paragraph(intro or "（暂无书籍简介，可在此处自行填写）"))
+        if user_intro:
+            blocks.extend(self._sanitize_block(b) for b in user_intro)
+        else:
+            intro = (book_info or {}).get("intro", "") or (book_info or {}).get("description", "")
+            blocks.append(_paragraph(intro or "（暂无书籍简介，可在此处自行填写）"))
         blocks.append(_divider())
 
         # ══════════════════════════════════════
@@ -610,8 +614,10 @@ class NotionSyncer:
         # 4. 启迪思考（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
         blocks.append(_h2_colored("💭 启迪思考", "yellow"))
-        # 暂不保留旧 block
-        blocks.append(_paragraph("（在此处记录你的思考和感悟）"))
+        if user_thinking:
+            blocks.extend(self._sanitize_block(b) for b in user_thinking)
+        else:
+            blocks.append(_paragraph("（在此处记录你的思考和感悟）"))
         blocks.append(_divider())
 
         # ══════════════════════════════════════
@@ -686,15 +692,39 @@ class NotionSyncer:
         })
 
         # ══════════════════════════════════════
-        # 写入 Notion（安全策略：先清除旧内容，再写入新 blocks）
+        # 写入 Notion：删除旧的同步区块，追加新的同步区块。
+        # 用户自行添加的区块（不在 5 个 h2 同步节内）保留不动。
         # ══════════════════════════════════════
-        # blocks 已完整构建，确保至少有 5 个 section 标题块才写入。
-        # 如果 blocks 意外为空，跳过写入，保护既有内容不被清空。
         if not blocks or len(blocks) < 5:
-            logger.warning(f"[{book_id}] 生成的 blocks 不足 5 个 (实际 {len(blocks)})，跳过写入，保护既有内容")
+            logger.warning(f"[{book_id}] 生成的 blocks 不足 5 个 (实际 {len(blocks)})，跳过写入")
             return
 
-        self._clear_page_content(page_id)
+        # 1. 列出页面所有 block（处理分页）
+        existing = self._list_all_blocks(page_id)
+
+        # 2. 识别同步节：从 syn h2 到下一个 h2（或末尾）的 block 标记为删除
+        delete_ids = set()
+        in_section = False
+        for blk in existing:
+            bid = blk["id"]
+            bt = blk.get("type", "")
+            if bt == "heading_2":
+                rich = blk[bt].get("rich_text", [])
+                text = rich[0]["plain_text"] if rich else ""
+                in_section = text in SYNC_H2_TITLES
+                if in_section:
+                    delete_ids.add(bid)
+            elif in_section:
+                delete_ids.add(bid)
+
+        # 3. 删除旧同步区块
+        for blk in existing:
+            if blk["id"] in delete_ids:
+                def _del(bid=blk["id"]):
+                    self._n(self.client.blocks.delete, block_id=bid)
+                retry_on_failure(_del, max_retries=2, base_delay=0.5)
+
+        # 4. 追加新的同步区块
         self._append_blocks_chunked(page_id, blocks)
 
     # ── 页面操作辅助 ──────────────────────────────────────────────────────
@@ -731,12 +761,27 @@ class NotionSyncer:
         return {"object": "block", "type": bt, bt: cleaned}
 
     def _clear_page_content(self, page_id: str):
-        """删除页面内所有块（带重试）"""
-        children = self._n(self.client.blocks.children.list, block_id=page_id)
-        for block in children.get("results", []):
+        """删除页面内所有块（带重试，处理分页）"""
+        children = self._list_all_blocks(page_id)
+        for block in children:
             def _del(bid=block["id"]):
                 self._n(self.client.blocks.delete, block_id=bid)
             retry_on_failure(_del, max_retries=2, base_delay=0.5)
+
+    def _list_all_blocks(self, page_id: str) -> list[dict]:
+        """递归列出页面内所有 block（处理 Notion API 分页，最多 100 条/页）"""
+        all_blocks = []
+        cursor = None
+        while True:
+            kwargs = {"block_id": page_id}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            resp = self._n(self.client.blocks.children.list, **kwargs)
+            all_blocks.extend(resp.get("results", []))
+            if not resp.get("has_more"):
+                break
+            cursor = resp.get("next_cursor")
+        return all_blocks
 
     def _append_blocks_chunked(self, page_id: str, blocks: list[dict], chunk_size: int = 100):
         """分批追加块（Notion API 单次上限 100，带重试）"""
