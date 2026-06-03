@@ -467,7 +467,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         blocks.append(_h2_colored("📖 书籍简介", "yellow"))
         if user_intro:
-            blocks.extend(user_intro)
+            blocks.extend(self._sanitize_block(b) for b in user_intro)
         else:
             intro = (book_info or {}).get("intro", "") or (book_info or {}).get("description", "")
             blocks.append(_paragraph(intro or "（暂无书籍简介，可在此处自行填写）"))
@@ -551,7 +551,7 @@ class NotionSyncer:
         # ══════════════════════════════════════
         blocks.append(_h2_colored("💭 启迪思考", "yellow"))
         if user_thinking:
-            blocks.extend(user_thinking)
+            blocks.extend(self._sanitize_block(b) for b in user_thinking)
         else:
             blocks.append(_paragraph("（在此处记录你的思考和感悟）"))
         blocks.append(_divider())
@@ -640,6 +640,17 @@ class NotionSyncer:
         self._append_blocks_chunked(page_id, blocks)
 
     # ── 页面操作辅助 ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_block(block: dict) -> dict:
+        """
+        从 Notion API 返回的原始 block 中提取有效字段。
+        去除 id / has_children / parent / created_time / archived 等元数据，
+        只保留 object、type 和 type 对应的内容字段。
+        """
+        bt = block.get("type", "paragraph")
+        content = block.get(bt, {})
+        return {"object": "block", "type": bt, bt: content}
 
     def _clear_page_content(self, page_id: str):
         """删除页面内所有块（带重试）"""
