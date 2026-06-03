@@ -40,15 +40,6 @@ def _rich(content: str, bold: bool = False) -> list[dict]:
     return [_text(c, bold) for c in chunks]
 
 
-def _heading2(text: str) -> dict:
-    return {"object": "block", "type": "heading_2",
-            "heading_2": {"rich_text": _rich(text, bold=True)}}
-
-
-def _heading3(text: str) -> dict:
-    return {"object": "block", "type": "heading_3",
-            "heading_3": {"rich_text": _rich(text)}}
-
 
 def _paragraph(text: str) -> dict:
     return {"object": "block", "type": "paragraph",
@@ -63,16 +54,6 @@ def _callout(text: str, emoji: str = "💡", color: str = "gray_background") -> 
 def _callout_green(text: str) -> dict:
     """绿色 callout — 自己的划线"""
     return _callout(text, "✏️")
-
-
-def _callout_blue(text: str) -> dict:
-    """蓝色 callout — 热门划线"""
-    return _callout(text, "🔥")
-
-
-def _callout_discuss(text: str) -> dict:
-    """讨论 callout — 章节讨论"""
-    return _callout(text, "💬")
 
 
 def _divider() -> dict:
@@ -366,20 +347,6 @@ class NotionSyncer:
             return True
         except Exception:
             return False
-
-    def batch_sync_covers(self, book_covers: dict[str, str], max_workers: int = 10) -> int:
-        """并发批量下载封面到 covers/ 目录"""
-        downloaded = 0
-
-        def _download(bid: str, url: str) -> bool:
-            return bool(_persist_cover(bid, url))
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_download, bid, url): bid for bid, url in book_covers.items()}
-            for future in as_completed(futures):
-                if future.result():
-                    downloaded += 1
-        return downloaded
 
     def update_page_covers(self, max_workers: int = 10) -> int:
         """并发更新 Notion 页面封面"""
