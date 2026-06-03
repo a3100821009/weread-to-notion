@@ -139,13 +139,14 @@ class NotionSyncer:
     def _n(self, fn, *args, **kwargs):
         """
         带限流的 Notion API 调用：
-        1. 全局锁确保 ≤3 req/s
-        2. 429/5xx 自动重试（指数退避，最长等 60s）
+        1. 全局锁确保单线程访问
+        2. 0.2s 间隔 ≈ 5 req/s（序列化后不会触发 429）
+        3. 429/5xx 自动重试（指数退避，最长等 60s）
         """
         with NotionSyncer._n_lock:
             now = time.time()
             elapsed = now - NotionSyncer._n_last
-            if elapsed < 0.35:
+            if elapsed < 0.2:
                 time.sleep(0.35 - elapsed)
             NotionSyncer._n_last = time.time()
 
