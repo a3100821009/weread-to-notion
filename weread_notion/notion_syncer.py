@@ -3,6 +3,7 @@ Notion 同步模块
 负责在 Notion 中创建/更新数据库和页面
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -11,10 +12,12 @@ from typing import Optional
 import requests
 from notion_client import Client
 
+from weread_notion.common import GITHUB_COVER_BASE, seconds_to_hm, retry_on_failure
+
+logger = logging.getLogger(__name__)
+
 # 封面存放目录
 COVERS_DIR = Path("covers")
-# 仓库已公开，使用 GitHub raw URL
-GITHUB_COVER_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
 
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
@@ -317,7 +320,11 @@ class NotionSyncer:
         """从 Notion 中删除（归档）一本书的页面，同时从本地缓存中移除映射"""
         try:
             self._clear_page_content(notion_page_id)
-            self.client.pages.update(page_id=notion_page_id, archived=True)
+
+            def _archive():
+                self.client.pages.update(page_id=notion_page_id, archived=True)
+            retry_on_failure(_archive, max_retries=2, base_delay=0.5)
+
             if book_id and book_id in self._book_pages:
                 del self._book_pages[book_id]
             return True
@@ -327,23 +334,25 @@ class NotionSyncer:
             return False
 
     def update_book_cover(self, notion_page_id: str, github_cover_url: str) -> bool:
-        """更新单本书的页面封面 + 数据库"封面" files 属性"""
+        """更新单本书的页面封面 + 数据库"封面" files 属性（带重试）"""
         if not github_cover_url:
             return False
         try:
-            self.client.pages.update(
-                page_id=notion_page_id,
-                cover={"type": "external", "external": {"url": github_cover_url}},
-                properties={
-                    "封面": {
-                        "files": [{
-                            "name": "cover.jpg",
-                            "type": "external",
-                            "external": {"url": github_cover_url},
-                        }]
-                    }
-                },
-            )
+            def _update():
+                self.client.pages.update(
+                    page_id=notion_page_id,
+                    cover={"type": "external", "external": {"url": github_cover_url}},
+                    properties={
+                        "封面": {
+                            "files": [{
+                                "name": "cover.jpg",
+                                "type": "external",
+                                "external": {"url": github_cover_url},
+                            }]
+                        }
+                    },
+                )
+            retry_on_failure(_update, max_retries=2, base_delay=0.5)
             return True
         except Exception:
             return False
@@ -378,6 +387,9 @@ class NotionSyncer:
         """
         重写书籍子页面，5 个 h2 模块（黄色背景），章节标题 h3（绿色背景）。
         保留用户在 书籍简介 和 启迪思考 中自行填写的内容。
+
+        ⚠ 关键安全策略：先构建 blocks，确认无误后再清空页面。
+          避免"清空后写入失败导致页面空白"的问题。
         """
         highlights = notes_data.get("highlights", [])
         chapters_map = notes_data.get("chapters", {})
@@ -446,9 +458,6 @@ class NotionSyncer:
                     user_thinking.append(blk)
         except Exception:
             pass
-
-        # ── 清空页面 ────────────────────────────────────────────────────
-        self._clear_page_content(page_id)
 
         blocks = []
 
@@ -569,33 +578,9 @@ class NotionSyncer:
             raw_progress = progress_info["book"].get("progress", 0)
         progress_pct = raw_progress if raw_progress >= 0 else 0
 
-        def _sec_to_hm(sec: int) -> str:
-            if sec <= 0:
-                return "0分钟"
-            h = sec // 3600
-            m = (sec % 3600) // 60
-            if h > 0 and m > 0:
-                return f"{h}小时{m}分钟"
-            elif h > 0:
-                return f"{h}小时"
-            else:
-                return f"{m}分钟"
-
-        # ── 统计卡片（4 列一行，每张卡片标题和内容分两行）─
-        card_data = [
-            ("⏱", "累计阅读", _sec_to_hm(book_total_sec) if book_total_sec > 0 else "-",
-             "green_background"),
-            ("📅", "阅读进度", f"{progress_pct}%" if progress_pct > 0 else "-",
-             "blue_background"),
-            ("📝", "笔记划线", f"{note_count} 条" if note_count > 0 else "-",
-             "orange_background"),
-            ("🏆", "开始日期", start_date or "-",
-             "purple_background"),
-        ]
-
-        columns = []
-        for icon, label, value, color in card_data:
-            columns.append({
+        # ── 统计卡片（2 列 × 2 行）─
+        def _make_card(icon, label, value, color) -> dict:
+            return {
                 "object": "block",
                 "type": "column",
                 "column": {
@@ -615,31 +600,62 @@ class NotionSyncer:
                         }
                     }]
                 }
-            })
+            }
 
+        cards = [
+            ("⏱", "累计阅读", seconds_to_hm(book_total_sec) if book_total_sec > 0 else "-",
+             "green_background"),
+            ("📅", "阅读进度", f"{progress_pct}%" if progress_pct > 0 else "-",
+             "blue_background"),
+            ("📝", "笔记划线", f"{note_count} 条" if note_count > 0 else "-",
+             "orange_background"),
+            ("🏆", "开始日期", start_date or "-",
+             "purple_background"),
+        ]
+
+        # 第 1 行：前 2 张
         blocks.append({
             "object": "block",
             "type": "column_list",
-            "column_list": {"children": columns},
+            "column_list": {"children": [_make_card(*cards[0]), _make_card(*cards[1])]},
+        })
+        # 第 2 行：后 2 张
+        blocks.append({
+            "object": "block",
+            "type": "column_list",
+            "column_list": {"children": [_make_card(*cards[2]), _make_card(*cards[3])]},
         })
 
         # ══════════════════════════════════════
-        # 写入 Notion
+        # 写入 Notion（安全策略：先清除旧内容，再写入新 blocks）
         # ══════════════════════════════════════
+        # blocks 已完整构建，确保至少有 5 个 section 标题块才写入。
+        # 如果 blocks 意外为空，跳过写入，保护既有内容不被清空。
+        if not blocks or len(blocks) < 5:
+            logger.warning(f"[{book_id}] 生成的 blocks 不足 5 个 (实际 {len(blocks)})，跳过写入，保护既有内容")
+            return
+
+        self._clear_page_content(page_id)
         self._append_blocks_chunked(page_id, blocks)
 
     # ── 页面操作辅助 ──────────────────────────────────────────────────────
 
     def _clear_page_content(self, page_id: str):
-        """删除页面内所有块"""
+        """删除页面内所有块（带重试）"""
         children = self.client.blocks.children.list(block_id=page_id)
         for block in children.get("results", []):
-            self.client.blocks.delete(block_id=block["id"])
+            def _del():
+                self.client.blocks.delete(block_id=block["id"])
+            retry_on_failure(_del, max_retries=2, base_delay=0.5)
 
     def _append_blocks_chunked(self, page_id: str, blocks: list[dict], chunk_size: int = 100):
-        """分批追加块（Notion API 单次上限 100）"""
+        """分批追加块（Notion API 单次上限 100，带重试）"""
         for i in range(0, len(blocks), chunk_size):
-            self.client.blocks.children.append(
-                block_id=page_id,
-                children=blocks[i:i + chunk_size],
-            )
+            chunk = blocks[i:i + chunk_size]
+
+            def _append(ch=chunk):
+                self.client.blocks.children.append(
+                    block_id=page_id,
+                    children=ch,
+                )
+            retry_on_failure(_append, max_retries=2, base_delay=0.5)
