@@ -3,8 +3,6 @@ Notion 同步模块
 负责在 Notion 中创建/更新数据库和页面
 """
 
-import json
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -58,45 +56,28 @@ def _paragraph(text: str) -> dict:
             "paragraph": {"rich_text": _rich(text)}}
 
 
-def _quote(text: str) -> dict:
-    return {"object": "block", "type": "quote",
-            "quote": {"rich_text": _rich(text)}}
-
-
 def _callout(text: str, emoji: str = "💡", color: str = "gray_background") -> dict:
     return {"object": "block", "type": "callout",
             "callout": {"rich_text": _rich(text), "icon": {"type": "emoji", "emoji": emoji}, "color": color}}
+
 
 def _callout_green(text: str) -> dict:
     """绿色 callout — 自己的划线"""
     return _callout(text, "✏️")
 
+
 def _callout_blue(text: str) -> dict:
     """蓝色 callout — 热门划线"""
     return _callout(text, "🔥")
+
 
 def _callout_discuss(text: str) -> dict:
     """讨论 callout — 章节讨论"""
     return _callout(text, "💬")
 
-def _heading_colored(text: str, color: str) -> dict:
-    """带颜色的 H3 标题（块级 + 富文本注解双重设色）"""
-    rich_text = [{
-        "type": "text",
-        "text": {"content": text},
-        "annotations": {"bold": False, "color": color},
-    }]
-    return {"object": "block", "type": "heading_3",
-            "heading_3": {"rich_text": rich_text, "color": color}}
-
 
 def _divider() -> dict:
     return {"object": "block", "type": "divider", "divider": {}}
-
-
-def _bullet(text: str) -> dict:
-    return {"object": "block", "type": "bulleted_list_item",
-            "bulleted_list_item": {"rich_text": _rich(text)}}
 
 
 def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str:
@@ -130,252 +111,6 @@ def _persist_cover(book_id: str, weread_cover_url: str, timeout: int = 5) -> str
     except Exception:
         return ""
 
-
-def _image_block(url: str, caption: str = "") -> dict:
-    """生成 Notion 图片块（外部 URL）"""
-    block = {
-        "object": "block",
-        "type": "image",
-        "image": {"type": "external", "external": {"url": url}},
-    }
-    if caption:
-        block["image"]["caption"] = _rich(caption)
-    return block
-
-
-def _embed_block(url: str) -> dict:
-    """生成 Notion 嵌入块（外部 URL）"""
-    return {
-        "object": "block",
-        "type": "embed",
-        "embed": {"url": url},
-    }
-
-
-def _chart_url(config: dict, width: int = 600, height: int = 400) -> str:
-    """通过 QuickChart.io 生成图表图片 URL"""
-    encoded = urllib.parse.quote(json.dumps(config, ensure_ascii=False))
-    return f"https://quickchart.io/chart?c={encoded}&w={width}&h={height}"
-
-
-# ── 图表生成器 ────────────────────────────────────────────────────────────────
-
-def _build_hourly_chart(prefer_time: list[int], total_sec: int) -> str:
-    """阅读时段分布柱状图（preferTime 从 6:00 开始，24 个元素）"""
-    if not prefer_time or len(prefer_time) != 24:
-        return ""
-
-    hours = []
-    minutes_data = []
-    for idx, sec in enumerate(prefer_time):
-        hour = (idx + 6) % 24
-        hours.append(f"{hour:02d}:00")
-        minutes_data.append(round(sec / 60, 1))
-
-    config = {
-        "type": "bar",
-        "data": {
-            "labels": hours,
-            "datasets": [{
-                "label": "阅读时长（分钟）",
-                "data": minutes_data,
-                "backgroundColor": "#4A90D9",
-                "borderRadius": 4,
-            }],
-        },
-        "options": {
-            "plugins": {
-                "title": {"display": True, "text": "阅读时段分布", "font": {"size": 16}},
-                "legend": {"display": False},
-            },
-            "scales": {
-                "y": {"title": {"display": True, "text": "分钟"}},
-            },
-        },
-    }
-    return _chart_url(config, width=680, height=380)
-
-
-def _build_category_chart(prefer_category: list[dict]) -> str:
-    """偏好分类饼图"""
-    if not prefer_category:
-        return ""
-
-    cats = prefer_category[:7]
-    labels = [c.get("categoryTitle", "其他") for c in cats]
-    data = [round(c.get("readingTime", 0) / 3600, 1) for c in cats]
-
-    colors = ["#4A90D9", "#7B68EE", "#E8913A", "#50C878", "#E85D75", "#20B2AA", "#DAA520"]
-
-    config = {
-        "type": "doughnut",
-        "data": {
-            "labels": labels,
-            "datasets": [{
-                "label": "阅读时长（小时）",
-                "data": data,
-                "backgroundColor": colors[:len(labels)],
-                "borderWidth": 2,
-                "borderColor": "#fff",
-            }],
-        },
-        "options": {
-            "plugins": {
-                "title": {"display": True, "text": "偏好分类（按阅读时长）", "font": {"size": 16}},
-            },
-        },
-    }
-    return _chart_url(config, width=500, height=400)
-
-
-def _build_author_chart(prefer_author: list[dict]) -> str:
-    """偏好作者横向柱状图"""
-    if not prefer_author:
-        return ""
-
-    authors = prefer_author[:8]
-    authors = list(reversed(authors))
-    labels = [a.get("name", "") for a in authors]
-    counts = [a.get("count", 0) for a in authors]
-
-    config = {
-        "type": "bar",
-        "data": {
-            "labels": labels,
-            "datasets": [{
-                "label": "阅读本数",
-                "data": counts,
-                "backgroundColor": "#E8913A",
-                "borderRadius": 4,
-            }],
-        },
-        "options": {
-            "indexAxis": "y",
-            "plugins": {
-                "title": {"display": True, "text": "偏好作者 TOP8", "font": {"size": 16}},
-                "legend": {"display": False},
-            },
-            "scales": {
-                "x": {"title": {"display": True, "text": "本数"}, "ticks": {"stepSize": 1}},
-            },
-        },
-    }
-    return _chart_url(config, width=600, height=380)
-
-
-def _build_reading_stat_chart(
-    total_sec: int,
-    read_days: int,
-    note_count: int,
-    max_day_sec: int,
-    max_day_label: str,
-    start_label: str,
-    read_records: list,
-) -> str:
-    """
-    生成仿微信读书 App 阅读统计风格的图表。
-    上方：4 个统计卡片（累计时长、阅读天数、笔记数、单日最久）
-    下方：每日阅读水平条形图（日期 + 蓝色进度条 + 时长）
-    """
-
-    def sec_to_hm(sec: int) -> str:
-        if sec <= 0:
-            return "0分钟"
-        h = sec // 3600
-        m = (sec % 3600) // 60
-        if h > 0 and m > 0:
-            return f"{h}小时{m}分钟"
-        elif h > 0:
-            return f"{h}小时"
-        else:
-            return f"{m}分钟"
-
-    # 每日明细
-    day_data = []
-    if read_records:
-        for rec in read_records:
-            d = rec.get("date", "") or rec.get("day", "")
-            dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-            if d and dur and dur > 0:
-                label = d[-5:] if len(d) >= 5 else d  # MM-DD
-                day_data.append((label, dur))
-        day_data = sorted(day_data, key=lambda x: x[0])
-
-    # 如果没有任何数据，返回空
-    if total_sec == 0 and read_days == 0 and not day_data:
-        return ""
-
-    has_chart = len(day_data) >= 1
-
-    # ── 用 QuickChart 生成组合图 ──────────────────────────────
-    # 策略：上方用一个水平 bar 图展示汇总（4项统计用不同颜色），
-    #        下方用水平 bar 展示每日记录
-    # 为了实现"卡片样式"的统计，用 annotation + 自定义 HTML 不可行
-    # 改用两段式：先生成统计卡片图，再生成每日进度图
-
-    # 每日图（若有数据）
-    if has_chart:
-        labels_chart = [x[0] for x in day_data]
-        data_chart = [round(x[1] / 60, 1) for x in day_data]
-        max_val = max(data_chart) if data_chart else 1
-        max_val_padded = max_val * 1.25  # 留右边空间显示标签
-
-        # 构建带标签的水平条形图（仿App每日进度条）
-        bar_config = {
-            "type": "bar",
-            "data": {
-                "labels": labels_chart,
-                "datasets": [{
-                    "data": data_chart,
-                    "backgroundColor": "#5BB8F5",
-                    "borderRadius": 6,
-                    "barThickness": 22,
-                }],
-            },
-            "options": {
-                "indexAxis": "y",
-                "layout": {"padding": {"left": 10, "right": 80, "top": 10, "bottom": 10}},
-                "plugins": {
-                    "legend": {"display": False},
-                    "datalabels": {
-                        "anchor": "end",
-                        "align": "right",
-                        "formatter": "function(v){var h=Math.floor(v/60),m=Math.round(v%60);return h>0?(m>0?h+'小时'+m+'分':h+'小时'):m+'分钟';}",
-                        "font": {"size": 11},
-                        "color": "#444",
-                    },
-                },
-                "scales": {
-                    "x": {
-                        "display": False,
-                        "max": max_val_padded,
-                        "grid": {"display": False},
-                        "border": {"display": False},
-                    },
-                    "y": {
-                        "grid": {"display": False},
-                        "ticks": {
-                            "font": {"size": 13, "weight": "bold"},
-                            "color": "#5BB8F5",
-                            "padding": 8,
-                        },
-                        "border": {"display": False},
-                    },
-                },
-            },
-        }
-
-        # 动态高度：每行约 36px + 头部 60px
-        chart_height = max(200, len(labels_chart) * 38 + 60)
-        chart_url = _chart_url(bar_config, width=600, height=chart_height)
-    else:
-        chart_url = ""
-
-    # 只返回每日进度条图（摘要统计已在外层以文字形式呈现）
-    return chart_url
-
-
-# ── Notion 的 heading_2 着色辅助 ─────────────────────────────────────────
 
 def _h2_colored(text: str, color: str) -> dict:
     """带颜色的 H2 标题（块级 + 富文本注解双重设色）"""
@@ -722,9 +457,6 @@ class NotionSyncer:
             if s.get("highlights") or s.get("reviews"):
                 all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
 
-        # 即使没有划线/评价，也要写入 5 个模块结构（简介、笔记、评价、思考、统计）
-        # 各模块内部会显示占位文字而非留空
-
         # ── 保留用户填写的内容 ────────────────────────────────────────────
         user_intro = []
         user_thinking = []
@@ -779,7 +511,7 @@ class NotionSyncer:
             has_hl = bool(ch_my_hl.get(cuid))
             has_rv = bool(ch_reviews.get(cuid))
             if not has_hl and not has_rv:
-                continue  # 没有划线和评价的章节直接跳过，不显示
+                continue
 
             ch_info = chapters_map.get(cuid, {})
             ch_title = ch_info.get("title", f"章节 {cuid}")
@@ -863,18 +595,13 @@ class NotionSyncer:
                     book_total_sec = int(v)
                     break
 
-        # ── 当月每日阅读记录（来自 readdata/detail monthly）─
-        read_records = (book_read_detail or {}).get("readRecords", [])
-        monthly_read_days = (book_read_detail or {}).get("readDays", 0)
         note_count = len(highlights) + len(reviews)
 
-        # ── 计算单日最久 ─────────────────────────────
-        max_day_sec = 0
-        if read_records and isinstance(read_records, list):
-            for rec in read_records:
-                dur = rec.get("readTime", 0) or rec.get("duration", 0) or rec.get("readDuration", 0)
-                if dur and dur > 0:
-                    max_day_sec = max(max_day_sec, int(dur))
+        # ── 阅读进度 ───────────────────────────────
+        raw_progress = 0
+        if progress_info and progress_info.get("book"):
+            raw_progress = progress_info["book"].get("progress", 0)
+        progress_pct = raw_progress if raw_progress >= 0 else 0
 
         def _sec_to_hm(sec: int) -> str:
             if sec <= 0:
@@ -888,20 +615,47 @@ class NotionSyncer:
             else:
                 return f"{m}分钟"
 
-        # ── 统计卡片（始终渲染 4 张，数据为 0 时显示 "-"）─
-        cards = [
+        # ── 统计卡片（4 列一行，每张卡片标题和内容分两行）─
+        card_data = [
             ("⏱", "累计阅读", _sec_to_hm(book_total_sec) if book_total_sec > 0 else "-",
              "green_background"),
-            ("📅", "阅读天数", f"{monthly_read_days} 天" if monthly_read_days > 0 else "-",
+            ("📅", "阅读进度", f"{progress_pct}%" if progress_pct > 0 else "-",
              "blue_background"),
             ("📝", "笔记划线", f"{note_count} 条" if note_count > 0 else "-",
              "orange_background"),
-            ("🏆", "单日最久", _sec_to_hm(max_day_sec) if max_day_sec > 0 else "-",
+            ("🏆", "开始日期", start_date or "-",
              "purple_background"),
         ]
 
-        for icon, label, value, color in cards:
-            blocks.append(_callout(f"{label}：{value}", emoji=icon, color=color))
+        columns = []
+        for icon, label, value, color in card_data:
+            columns.append({
+                "object": "block",
+                "type": "column",
+                "column": {
+                    "children": [{
+                        "object": "block",
+                        "type": "callout",
+                        "callout": {
+                            "rich_text": [
+                                {"type": "text", "text": {"content": label},
+                                 "annotations": {"bold": False}},
+                                {"type": "text", "text": {"content": "\n"}},
+                                {"type": "text", "text": {"content": value},
+                                 "annotations": {"bold": True}},
+                            ],
+                            "icon": {"type": "emoji", "emoji": icon},
+                            "color": color,
+                        }
+                    }]
+                }
+            })
+
+        blocks.append({
+            "object": "block",
+            "type": "column_list",
+            "column_list": {"children": columns},
+        })
 
         # ── 链接到完整统计页面 ────────────────────
         if book_id:
