@@ -4,7 +4,6 @@ Notion 同步模块
 """
 
 import logging
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -117,30 +116,6 @@ def _h2_colored(text: str, color: str) -> dict:
 # 同步写入的 5 个区块标题，用于识别哪些 block 属于同步内容
 SYNC_H2_TITLES = {"📖 书籍简介", "📝 读书笔记", "⭐ 书籍评价", "💭 启迪思考", "📊 阅读统计"}
 
-class _NotionRateLimiter:
-    """令牌桶：允许短时爆发（最多 10 并发），持续速率 3 req/s"""
-    def __init__(self):
-        self._rate = 3.0        # 每秒补充 3 个令牌
-        self._capacity = 10     # 桶容量（爆发达 10 并发）
-        self._tokens = 10.0     # 初始满桶
-        self._last_refill = 0.0
-        self._lock = threading.Lock()
-
-    def wait(self):
-        while True:
-            with self._lock:
-                now = time.time()
-                elapsed = now - self._last_refill
-                self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
-                self._last_refill = now
-                if self._tokens >= 1:
-                    self._tokens -= 1
-                    return
-                # 需要等待多久才有 1 个令牌
-                wait = (1.0 - self._tokens) / self._rate
-            time.sleep(max(wait, 0.01))
-
-
 class NotionSyncer:
     """
     负责将微信阅读数据写入 Notion。
@@ -153,9 +128,6 @@ class NotionSyncer:
     """
     SHELF_DB_TITLE = "📚 微信阅读书架"
 
-    # 全局 Notion API 限流器（令牌桶，支持短时爆发）
-    _rl = _NotionRateLimiter()
-
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None,
                  shelf_db_id: Optional[str] = None):
         self.client = Client(auth=token)
@@ -165,12 +137,9 @@ class NotionSyncer:
 
     def _n(self, fn, *args, **kwargs):
         """
-        Notion API 调用——令牌桶限流 + 429 重试。
-        - 爆发时最多 10 并发，持续速率 3 req/s
-        - 遇 429 指数退避重试（1s→2s→4s）
+        Notion API 调用——纯并发，遇 429 直接抛出，5xx 保留 3 次重试。
+        429 由外层 SyncManager 在 10 分钟后全域重试。
         """
-        NotionSyncer._rl.wait()
-
         attempt = 0
         max_retries = 3
         while True:
@@ -178,7 +147,9 @@ class NotionSyncer:
                 return fn(*args, **kwargs)
             except APIResponseError as e:
                 status = getattr(e, "status", 0) or (getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0)
-                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                if status == 429:
+                    raise  # 限流 → 直接抛出，由外层全域重试
+                if status in (500, 502, 503, 504) and attempt < max_retries:
                     delay = min(1.0 * (2 ** attempt), 60.0)
                     attempt += 1
                     logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")

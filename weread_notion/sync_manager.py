@@ -5,6 +5,7 @@
 import json
 import os
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,8 @@ from rich.panel import Panel
 
 from weread_notion.weread_client import WeReadClient
 from weread_notion.notion_syncer import NotionSyncer
-from weread_notion.common import extract_reading_time, seconds_to_hm
+from weread_notion.common import extract_reading_time, seconds_to_hm, retry_on_failure
+from notion_client.errors import APIResponseError
 
 console = Console()
 
@@ -171,6 +173,24 @@ class SyncManager:
             console.print(f"  [green]✓ 清理完成：删除 {deleted_count} 本，保留 {kept_count} 本[/green]")
 
     def run(self):
+        max_attempts = 10  # 最多重试 10 次（~100 分钟）
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                console.print(f"[yellow]⏳ Notion API 限流，等待 10 分钟后第 {attempt} 次重试...[/yellow]")
+                time.sleep(600)
+
+            try:
+                self._run_once()
+                return  # 成功，退出重试循环
+            except APIResponseError as e:
+                err_msg = str(e)
+                if "429" not in err_msg and "rate limited" not in err_msg.lower():
+                    raise  # 非 429 错误直接抛出不重试
+                if attempt == max_attempts:
+                    console.print(f"[red]✗ 已重试 {max_attempts} 次仍遇到限流，放弃本次同步[/red]")
+                    raise
+
+    def _run_once(self):
         console.print(Panel.fit(
             "[bold cyan]微信阅读 → Notion 同步[/bold cyan]\n"
             "[dim]WeRead to Notion Sync Tool[/dim]",
@@ -370,20 +390,29 @@ class SyncManager:
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)
                 except Exception as e:
-                    return (book_id, False, (book_title, type(e).__name__, str(e)))
+                    # 429 限流 → 全域重试，不由线程捕获
+                    err_msg = str(e)
+                    if "429" in err_msg or "rate limited" in err_msg.lower():
+                        raise
+                    return (book_id, False, (book_title, type(e).__name__, err_msg))
 
             with ThreadPoolExecutor(max_workers=15) as pool:
                 future_map = {pool.submit(sync_one, bs): bs["bookId"] for bs in sync_books}
-                for future in as_completed(future_map):
-                    bid, ok, err = future.result()
-                    if ok:
-                        success_count += 1
-                    else:
-                        fail_count += 1
-                        if first_error is None:
-                            first_error = err
-                        title, etype, msg = err
-                        console.print(f"\n  [red]✗ {title[:20]}: {etype}: {msg[:80]}[/red]")
+                try:
+                    for future in as_completed(future_map):
+                        bid, ok, err = future.result()
+                        if ok:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                            if first_error is None:
+                                first_error = err
+                            title, etype, msg = err
+                            console.print(f"\n  [red]✗ {title[:20]}: {etype}: {msg[:80]}[/red]")
+                except APIResponseError as e:
+                    # 429 全域重试：关闭线程池，抛给 run() 处理
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
 
         console.print(f"\n[bold]书架同步汇总：[/bold] 成功 [green]{success_count}[/green] | 失败 [red]{fail_count}[/red] | 跳过 [dim]{skip_count}[/dim]")
         if fail_count == total and total > 0:
