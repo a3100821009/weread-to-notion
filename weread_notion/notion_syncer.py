@@ -383,7 +383,7 @@ class NotionSyncer:
 
     def sync_book_notes(self, page_id, notes_data, social_data=None, book_title="",
                         book_info=None, book_read_detail=None, progress_info=None,
-                        book_id=""):
+                        book_id="", start_date=""):
         """
         重写书籍子页面，5 个 h2 模块（黄色背景），章节标题 h3（绿色背景）。
         保留用户在 书籍简介 和 启迪思考 中自行填写的内容。
@@ -568,22 +568,6 @@ class NotionSyncer:
                 v = p.get(f, 0)
                 if v and v > 0:
                     book_total_sec = int(v)
-                    break
-
-        # ── 开始日期（来自 progress_info / book_info）──
-        start_date = None
-        if progress_info and progress_info.get("book"):
-            p = progress_info["book"]
-            for fld in ["firstReadTime", "firstOpenTime", "createTime"]:
-                ft = p.get(fld, 0)
-                if ft and ft > 0:
-                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
-                    break
-        if not start_date and book_info:
-            for fld in ["createTime", "addTime", "create_time", "add_time"]:
-                ft = book_info.get(fld, 0)
-                if ft and ft > 0:
-                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
                     break
 
         note_count = len(highlights) + len(reviews)
