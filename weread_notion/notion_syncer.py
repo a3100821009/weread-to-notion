@@ -15,7 +15,6 @@ from notion_client import Client
 COVERS_DIR = Path("covers")
 # 仓库已公开，使用 GitHub raw URL
 GITHUB_COVER_BASE = "https://raw.githubusercontent.com/a3100821009/weread-to-notion/main/covers"
-GITHUB_STATS_BASE = "https://a3100821009.github.io/weread-to-notion/stats"
 
 
 # ── Notion 富文本块辅助 ──────────────────────────────────────────────────────
@@ -656,15 +655,6 @@ class NotionSyncer:
             "type": "column_list",
             "column_list": {"children": columns},
         })
-
-        # ── 链接到完整统计页面 ────────────────────
-        if book_id:
-            stats_url = f"{GITHUB_STATS_BASE}/{book_id}.html"
-            link_rich = [_text("🔗 查看完整阅读统计 →", url=stats_url)]
-            blocks.append({
-                "object": "block", "type": "paragraph",
-                "paragraph": {"rich_text": link_rich},
-            })
 
         # ══════════════════════════════════════
         # 写入 Notion
