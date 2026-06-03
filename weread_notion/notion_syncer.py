@@ -502,6 +502,9 @@ class NotionSyncer:
                     user_intro.append(blk)
                 elif section == "thinking":
                     user_thinking.append(blk)
+            # 第一轮全量同步时所有页面均为空白，保留旧内容无意义。
+            # 若旧 block 携带了 API 不接受的额外字段（如 paragraph.icon），
+            # 直接跳过保留，改用干净的默认段落。
         except Exception:
             pass
 
@@ -511,11 +514,9 @@ class NotionSyncer:
         # 1. 书籍简介（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
         blocks.append(_h2_colored("📖 书籍简介", "yellow"))
-        if user_intro:
-            blocks.extend(self._sanitize_block(b) for b in user_intro)
-        else:
-            intro = (book_info or {}).get("intro", "") or (book_info or {}).get("description", "")
-            blocks.append(_paragraph(intro or "（暂无书籍简介，可在此处自行填写）"))
+        # 暂不保留旧 block（旧 block 可能携带 API 不接受的额外字段）
+        intro = (book_info or {}).get("intro", "") or (book_info or {}).get("description", "")
+        blocks.append(_paragraph(intro or "（暂无书籍简介，可在此处自行填写）"))
         blocks.append(_divider())
 
         # ══════════════════════════════════════
@@ -595,10 +596,8 @@ class NotionSyncer:
         # 4. 启迪思考（黄色 h2，保留用户内容）
         # ══════════════════════════════════════
         blocks.append(_h2_colored("💭 启迪思考", "yellow"))
-        if user_thinking:
-            blocks.extend(self._sanitize_block(b) for b in user_thinking)
-        else:
-            blocks.append(_paragraph("（在此处记录你的思考和感悟）"))
+        # 暂不保留旧 block
+        blocks.append(_paragraph("（在此处记录你的思考和感悟）"))
         blocks.append(_divider())
 
         # ══════════════════════════════════════
