@@ -133,10 +133,11 @@ class NotionSyncer:
     _n_slot_lock = threading.Lock()
     _n_round_robin = 0
 
-    def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None):
+    def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None,
+                 shelf_db_id: Optional[str] = None):
         self.client = Client(auth=token)
         self.parent_page_id = parent_page_id
-        self._shelf_db_id: Optional[str] = None
+        self._shelf_db_id: Optional[str] = shelf_db_id
         self._book_pages: dict = book_pages or {}
 
     def _n(self, fn, *args, **kwargs):
@@ -189,7 +190,9 @@ class NotionSyncer:
 
     def setup(self):
         """初始化 Notion 结构（幂等，已存在则跳过）"""
-        self._shelf_db_id = self._get_or_create_shelf_db()
+        if not self._shelf_db_id:
+            # 无缓存时才 search（/v1/search 限流极严，仅第一次调用）
+            self._shelf_db_id = self._get_or_create_shelf_db()
         self._ensure_shelf_db_properties()
 
     def _ensure_shelf_db_properties(self):

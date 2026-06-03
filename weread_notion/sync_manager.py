@@ -103,6 +103,7 @@ class SyncManager:
         self.ns = NotionSyncer(
             notion_token, parent_page_id,
             book_pages=self.state.get("book_pages", {}),
+            shelf_db_id=self.state.get("shelf_db_id"),
         )
         # 初始化 book_meta（追踪每本书的阅读时间等信息）
         if "book_meta" not in self.state:
@@ -190,9 +191,11 @@ class SyncManager:
         # 2. 检测并清理书架中已移除的低阅读时间书籍
         #    已在 _sync_shelf 末尾调用 _cleanup_removed_books
 
-        # 回存 book_pages 映射 + book_meta
+        # 回存 book_pages 映射 + book_meta + 书架数据库 ID
         self.state["book_pages"] = self.ns._book_pages
         self.state["book_meta"] = self.state.get("book_meta", {})
+        if self.ns._shelf_db_id:
+            self.state["shelf_db_id"] = self.ns._shelf_db_id
         save_state(self.state)
 
         # 最终确认
