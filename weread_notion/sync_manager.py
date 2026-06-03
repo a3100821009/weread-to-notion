@@ -236,34 +236,50 @@ class SyncManager:
         skip_count = 0
         first_error = None
 
-        # 先处理增量跳过（不需要 API 调用，快速）
+        # 精细增量跳过：从书架数据提取阅读时长，与 state 比对。
+        # 阅读时长未变 → 书没被读过，0 个 API 调用直接跳过。
         sync_books = []
         for book_shelf in books:
             book_id = book_shelf["bookId"]
             book_title = book_shelf.get("title", book_id)
-            last_read_ts = book_shelf.get("readUpdateTime", 0)
-            state_key = f"book_{book_id}"
 
-            if self.incremental and self.state.get(state_key) == last_read_ts and last_read_ts > 0:
+            if self.incremental:
                 existing_meta = self.state.get("book_meta", {}).get(book_id, {})
-                shelf_cover = book_shelf.get("cover", "")
-                cover_url = shelf_cover or existing_meta.get("coverUrl", "")
-                self.state.setdefault("book_meta", {})[book_id] = {
-                    "title": book_title,
-                    "author": existing_meta.get("author", ""),
-                    "readingTime": existing_meta.get("readingTime", 0),
-                    "coverUrl": cover_url,
-                    "noteCount": existing_meta.get("noteCount", 0),
-                    "reviewCount": existing_meta.get("reviewCount", 0),
-                    "progress": existing_meta.get("progress", 0),
-                    "startDate": existing_meta.get("startDate", ""),
-                    "lastSynced": existing_meta.get("lastSynced", datetime.now().isoformat()),
-                }
-                skip_count += 1
+
+                # 新书（不在之前 state 中）→ 需要同步
+                if not existing_meta:
+                    sync_books.append(book_shelf)
+                    continue
+
+                # 从书架数据提取阅读时长（不需要调 API）
+                current_rt = extract_reading_time(book_shelf, {})
+                stored_rt = existing_meta.get("readingTime", 0)
+
+                if current_rt == stored_rt:
+                    # 阅读时长未变 → 书没有新阅读行为 → 跳过，零 API 调用
+                    skip_count += 1
+                    shelf_cover = book_shelf.get("cover", "")
+                    cover_url = shelf_cover or existing_meta.get("coverUrl", "")
+                    self.state.setdefault("book_meta", {})[book_id] = {
+                        "title": book_title,
+                        "author": existing_meta.get("author", ""),
+                        "readingTime": stored_rt,
+                        "coverUrl": cover_url,
+                        "noteCount": existing_meta.get("noteCount", 0),
+                        "reviewCount": existing_meta.get("reviewCount", 0),
+                        "progress": existing_meta.get("progress", 0),
+                        "startDate": existing_meta.get("startDate", ""),
+                        "lastSynced": datetime.now().isoformat(),
+                    }
+                else:
+                    # 阅读时长变了 → 书被读过，需要同步
+                    sync_books.append(book_shelf)
             else:
+                # 全量模式：所有书都处理
                 sync_books.append(book_shelf)
 
-        # 并发同步需要更新的书
+        if skip_count > 0:
+            console.print(f"  [dim]增量跳过 {skip_count} 本（阅读时长未变，零 API 调用）[/dim]")
         if sync_books:
             console.print(f"  并发同步 [cyan]{len(sync_books)}[/cyan] 本（10 线程）...")
 
