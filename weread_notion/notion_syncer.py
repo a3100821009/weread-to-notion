@@ -4,6 +4,8 @@ Notion 同步模块
 """
 
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -123,11 +125,25 @@ class NotionSyncer:
     """
     SHELF_DB_TITLE = "📚 微信阅读书架"
 
+    # 跨线程 Notion API 限流（≤3 req/s）
+    _n_lock = threading.Lock()
+    _n_last = 0.0
+
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None):
-        self.client = Client(auth=token)
+        self.client = Client(auth=token, retry_on_429=True)
         self.parent_page_id = parent_page_id
         self._shelf_db_id: Optional[str] = None
         self._book_pages: dict = book_pages or {}
+
+    def _n(self, fn, *args, **kwargs):
+        """带限流的 Notion API 调用——全局锁确保 ≤3 req/s"""
+        with NotionSyncer._n_lock:
+            now = time.time()
+            elapsed = now - NotionSyncer._n_last
+            if elapsed < 0.35:
+                time.sleep(0.35 - elapsed)
+            NotionSyncer._n_last = time.time()
+        return fn(*args, **kwargs)
 
     # ── 初始化结构 ──────────────────────────────────────────────────────────
 
@@ -139,7 +155,7 @@ class NotionSyncer:
     def _ensure_shelf_db_properties(self):
         """补充书籍数据库中可能缺失的新字段"""
         try:
-            self.client.databases.update(
+            self._n(self.client.databases.update,
                 database_id=self._shelf_db_id,
                 properties={
                     "阅读时长": {"rich_text": {}},
@@ -151,7 +167,7 @@ class NotionSyncer:
 
     def _search_in_parent(self, title: str, obj_type: str) -> Optional[str]:
         """在父页面中查找已存在的子页面/数据库（跳过已归档的）"""
-        result = self.client.search(query=title)
+        result = self._n(self.client.search, query=title)
         for item in result.get("results", []):
             if item.get("object") != obj_type:
                 continue
@@ -168,7 +184,7 @@ class NotionSyncer:
         if db_id:
             return db_id
 
-        db = self.client.databases.create(
+        db = self._n(self.client.databases.create,
             parent={"type": "page_id", "page_id": self.parent_page_id},
             title=[{"type": "text", "text": {"content": self.SHELF_DB_TITLE}}],
             icon={"type": "emoji", "emoji": "📚"},
@@ -208,7 +224,7 @@ class NotionSyncer:
         notion_id = self._book_pages.get(book_id)
         if notion_id:
             try:
-                self.client.pages.retrieve(page_id=notion_id)
+                self._n(self.client.pages.retrieve, page_id=notion_id)
                 return notion_id
             except Exception:
                 del self._book_pages[book_id]
@@ -304,10 +320,10 @@ class NotionSyncer:
         existing_id = self._find_book_page(book_id)
         if existing_id:
             update_props = {k: v for k, v in properties.items() if k != "书名"}
-            self.client.pages.update(page_id=existing_id, properties=update_props)
+            self._n(self.client.pages.update, page_id=existing_id, properties=update_props)
             return existing_id
         else:
-            page = self.client.pages.create(
+            page = self._n(self.client.pages.create,
                 parent={"database_id": self._shelf_db_id},
                 properties=properties,
                 icon={"type": "emoji", "emoji": "📖"},
@@ -322,7 +338,7 @@ class NotionSyncer:
             self._clear_page_content(notion_page_id)
 
             def _archive():
-                self.client.pages.update(page_id=notion_page_id, archived=True)
+                self._n(self.client.pages.update, page_id=notion_page_id, archived=True)
             retry_on_failure(_archive, max_retries=2, base_delay=0.5)
 
             if book_id and book_id in self._book_pages:
@@ -339,7 +355,7 @@ class NotionSyncer:
             return False
         try:
             def _update():
-                self.client.pages.update(
+                self._n(self.client.pages.update,
                     page_id=notion_page_id,
                     cover={"type": "external", "external": {"url": github_cover_url}},
                     properties={
@@ -440,7 +456,7 @@ class NotionSyncer:
         user_intro = []
         user_thinking = []
         try:
-            existing = self.client.blocks.children.list(block_id=page_id).get("results", [])
+            existing = self._n(self.client.blocks.children.list, block_id=page_id).get("results", [])
             section = None
             for blk in existing:
                 bt = blk.get("type", "")
@@ -654,10 +670,10 @@ class NotionSyncer:
 
     def _clear_page_content(self, page_id: str):
         """删除页面内所有块（带重试）"""
-        children = self.client.blocks.children.list(block_id=page_id)
+        children = self._n(self.client.blocks.children.list, block_id=page_id)
         for block in children.get("results", []):
-            def _del():
-                self.client.blocks.delete(block_id=block["id"])
+            def _del(bid=block["id"]):
+                self._n(self.client.blocks.delete, block_id=bid)
             retry_on_failure(_del, max_retries=2, base_delay=0.5)
 
     def _append_blocks_chunked(self, page_id: str, blocks: list[dict], chunk_size: int = 100):
@@ -666,7 +682,7 @@ class NotionSyncer:
             chunk = blocks[i:i + chunk_size]
 
             def _append(ch=chunk):
-                self.client.blocks.children.append(
+                self._n(self.client.blocks.children.append,
                     block_id=page_id,
                     children=ch,
                 )
