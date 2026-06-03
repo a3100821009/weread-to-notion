@@ -13,6 +13,7 @@ from typing import Optional
 
 import requests
 from notion_client import Client
+from notion_client.errors import APIResponseError
 
 from weread_notion.common import GITHUB_COVER_BASE, seconds_to_hm, retry_on_failure
 
@@ -136,7 +137,11 @@ class NotionSyncer:
         self._book_pages: dict = book_pages or {}
 
     def _n(self, fn, *args, **kwargs):
-        """带限流的 Notion API 调用——全局锁确保 ≤3 req/s，自动重试 429/5xx"""
+        """
+        带限流的 Notion API 调用：
+        1. 全局锁确保 ≤3 req/s
+        2. 429/5xx 自动重试（指数退避，最长等 60s）
+        """
         with NotionSyncer._n_lock:
             now = time.time()
             elapsed = now - NotionSyncer._n_last
@@ -144,10 +149,29 @@ class NotionSyncer:
                 time.sleep(0.35 - elapsed)
             NotionSyncer._n_last = time.time()
 
-        def _call():
-            return fn(*args, **kwargs)
-        return retry_on_failure(_call, max_retries=2, base_delay=1.0,
-                                status_forcelist=(429, 500, 502, 503, 504))
+        attempt = 0
+        max_retries = 3
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except APIResponseError as e:
+                status = getattr(e, "status", 0) or getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
+                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    delay = min(1.0 * (2 ** attempt), 60.0)
+                    attempt += 1
+                    logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                    time.sleep(delay)
+                    continue
+                raise
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    delay = min(1.0 * (2 ** attempt), 60.0)
+                    attempt += 1
+                    logger.warning(f"HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                    time.sleep(delay)
+                    continue
+                raise
 
     # ── 初始化结构 ──────────────────────────────────────────────────────────
 
