@@ -117,6 +117,30 @@ def _h2_colored(text: str, color: str) -> dict:
 # 同步写入的 5 个区块标题，用于识别哪些 block 属于同步内容
 SYNC_H2_TITLES = {"📖 书籍简介", "📝 读书笔记", "⭐ 书籍评价", "💭 启迪思考", "📊 阅读统计"}
 
+class _NotionRateLimiter:
+    """令牌桶：允许短时爆发（最多 10 并发），持续速率 3 req/s"""
+    def __init__(self):
+        self._rate = 3.0        # 每秒补充 3 个令牌
+        self._capacity = 10     # 桶容量（爆发达 10 并发）
+        self._tokens = 10.0     # 初始满桶
+        self._last_refill = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self):
+        while True:
+            with self._lock:
+                now = time.time()
+                elapsed = now - self._last_refill
+                self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+                self._last_refill = now
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    return
+                # 需要等待多久才有 1 个令牌
+                wait = (1.0 - self._tokens) / self._rate
+            time.sleep(max(wait, 0.01))
+
+
 class NotionSyncer:
     """
     负责将微信阅读数据写入 Notion。
@@ -129,12 +153,8 @@ class NotionSyncer:
     """
     SHELF_DB_TITLE = "📚 微信阅读书架"
 
-    # 跨线程 Notion 令牌桶：最多 3 个并发槽位，每个槽位执行后冷却 0.36s
-    # 有效速率 ≈ 3 req/s（Notion API 硬限制），避免 429
-    _n_tokens = threading.Semaphore(3)
-    _n_next_at = [0.0] * 3
-    _n_slot_lock = threading.Lock()
-    _n_round_robin = 0
+    # 全局 Notion API 限流器（令牌桶，支持短时爆发）
+    _rl = _NotionRateLimiter()
 
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None,
                  shelf_db_id: Optional[str] = None):
@@ -146,48 +166,34 @@ class NotionSyncer:
     def _n(self, fn, *args, **kwargs):
         """
         Notion API 调用——令牌桶限流 + 429 重试。
-        - 每秒最多 3 次请求（Notion API 硬限制）
+        - 爆发时最多 10 并发，持续速率 3 req/s
         - 遇 429 指数退避重试（1s→2s→4s）
         """
-        # 获取令牌（槽位），最多 3 个并发
-        NotionSyncer._n_tokens.acquire()
-        try:
-            # 分配槽位并等待冷却
-            with NotionSyncer._n_slot_lock:
-                slot = NotionSyncer._n_round_robin
-                NotionSyncer._n_round_robin = (slot + 1) % 3
-                wait = max(0.0, NotionSyncer._n_next_at[slot] - time.time())
-            if wait > 0:
-                time.sleep(wait)
+        NotionSyncer._rl.wait()
 
-            attempt = 0
-            max_retries = 3
-            while True:
-                try:
-                    return fn(*args, **kwargs)
-                except APIResponseError as e:
-                    status = getattr(e, "status", 0) or (getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0)
-                    if status in (429, 500, 502, 503, 504) and attempt < max_retries:
-                        delay = min(1.0 * (2 ** attempt), 60.0)
-                        attempt += 1
-                        logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
-                        time.sleep(delay)
-                        continue
-                    raise
-                except requests.exceptions.HTTPError as e:
-                    status = e.response.status_code if e.response is not None else 0
-                    if status in (429, 500, 502, 503, 504) and attempt < max_retries:
-                        delay = min(1.0 * (2 ** attempt), 60.0)
-                        attempt += 1
-                        logger.warning(f"HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
-                        time.sleep(delay)
-                        continue
-                    raise
-        finally:
-            # 无论成功/失败，设置冷却时间
-            with NotionSyncer._n_slot_lock:
-                NotionSyncer._n_next_at[slot] = time.time() + 0.36
-            NotionSyncer._n_tokens.release()
+        attempt = 0
+        max_retries = 3
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except APIResponseError as e:
+                status = getattr(e, "status", 0) or (getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0)
+                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    delay = min(1.0 * (2 ** attempt), 60.0)
+                    attempt += 1
+                    logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                    time.sleep(delay)
+                    continue
+                raise
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    delay = min(1.0 * (2 ** attempt), 60.0)
+                    attempt += 1
+                    logger.warning(f"HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                    time.sleep(delay)
+                    continue
+                raise
 
     # ── 初始化结构 ──────────────────────────────────────────────────────────
 
@@ -266,14 +272,12 @@ class NotionSyncer:
     # ── 书架同步 ────────────────────────────────────────────────────────────
 
     def _find_book_page(self, book_id: str) -> Optional[str]:
-        """在书架数据库中按 bookId 查找已有记录（先查本地缓存，再验证 Notion）"""
+        """在书架数据库中按 bookId 查找已有记录（依赖本地缓存，避免额外 verify API 调用）"""
         notion_id = self._book_pages.get(book_id)
         if notion_id:
-            try:
-                self._n(self.client.pages.retrieve, page_id=notion_id)
-                return notion_id
-            except Exception:
-                del self._book_pages[book_id]
+            # 不调 pages.retrieve 验证——节省一次 Notion API 调用。
+            # pages.update/create 会自然处理页面不存在的情况。
+            return notion_id
         return None
 
     def sync_book(self, book_info, progress_info=None, notebook_info=None, book_shelf=None, book_read_detail=None):
@@ -366,17 +370,21 @@ class NotionSyncer:
         existing_id = self._find_book_page(book_id)
         if existing_id:
             update_props = {k: v for k, v in properties.items() if k != "书名"}
-            self._n(self.client.pages.update, page_id=existing_id, properties=update_props)
-            return existing_id
-        else:
-            page = self._n(self.client.pages.create,
-                parent={"database_id": self._shelf_db_id},
-                properties=properties,
-                icon={"type": "emoji", "emoji": "📖"},
-            )
-            notion_id = page["id"]
-            self._book_pages[book_id] = notion_id
-            return notion_id
+            try:
+                self._n(self.client.pages.update, page_id=existing_id, properties=update_props)
+                return existing_id
+            except Exception:
+                # page 可能已被删除 → 清缓存，回退到 create
+                self._book_pages.pop(book_id, None)
+
+        page = self._n(self.client.pages.create,
+            parent={"database_id": self._shelf_db_id},
+            properties=properties,
+            icon={"type": "emoji", "emoji": "📖"},
+        )
+        notion_id = page["id"]
+        self._book_pages[book_id] = notion_id
+        return notion_id
 
     def delete_book_page(self, notion_page_id: str, book_id: str = "") -> bool:
         """从 Notion 中删除（归档）一本书的页面，同时从本地缓存中移除映射"""

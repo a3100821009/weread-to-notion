@@ -254,23 +254,28 @@ class SyncManager:
                 # 从书架数据提取阅读时长（不需要调 API）
                 current_rt = extract_reading_time(book_shelf, {})
                 stored_rt = existing_meta.get("readingTime", 0)
+                nb_info = notebook_map.get(book_id)
 
                 if current_rt == stored_rt:
-                    # 阅读时长未变 → 书没有新阅读行为 → 跳过，零 API 调用
-                    skip_count += 1
-                    shelf_cover = book_shelf.get("cover", "")
-                    cover_url = shelf_cover or existing_meta.get("coverUrl", "")
-                    self.state.setdefault("book_meta", {})[book_id] = {
-                        "title": book_title,
-                        "author": existing_meta.get("author", ""),
-                        "readingTime": stored_rt,
-                        "coverUrl": cover_url,
-                        "noteCount": existing_meta.get("noteCount", 0),
-                        "reviewCount": existing_meta.get("reviewCount", 0),
-                        "progress": existing_meta.get("progress", 0),
-                        "startDate": existing_meta.get("startDate", ""),
-                        "lastSynced": datetime.now().isoformat(),
-                    }
+                    if current_rt == 0 and nb_info:
+                        # 阅读时长为 0 但有笔记 → 不能跳过，需同步一次写入笔记内容
+                        sync_books.append(book_shelf)
+                    else:
+                        # 阅读时长未变（均为 0 或无笔记）→ 跳过，零 API 调用
+                        skip_count += 1
+                        shelf_cover = book_shelf.get("cover", "")
+                        cover_url = shelf_cover or existing_meta.get("coverUrl", "")
+                        self.state.setdefault("book_meta", {})[book_id] = {
+                            "title": book_title,
+                            "author": existing_meta.get("author", ""),
+                            "readingTime": stored_rt,
+                            "coverUrl": cover_url,
+                            "noteCount": existing_meta.get("noteCount", 0),
+                            "reviewCount": existing_meta.get("reviewCount", 0),
+                            "progress": existing_meta.get("progress", 0),
+                            "startDate": existing_meta.get("startDate", ""),
+                            "lastSynced": datetime.now().isoformat(),
+                        }
                 else:
                     # 阅读时长变了 → 书被读过，需要同步
                     sync_books.append(book_shelf)
@@ -346,13 +351,8 @@ class SyncManager:
                 try:
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
-                    # 是否需要写入/更新页面内容
-                    needs_content = self.sync_highlights or self.sync_reviews
-                    already_written = self.state.get("book_meta", {}).get(book_id, {}).get("content_written", False)
-
-                    if needs_content and (nb_info or not already_written):
-                        # 有笔记的书 → 每次都同步（划线/想法会变化）
-                        # 无笔记的书 → 只写一次基础结构（content_written 后跳过）
+                    # readingTime 变了 → 更新全部页面内容（笔记/划线/评价/统计）
+                    if self.sync_highlights or self.sync_reviews:
                         if nb_info:
                             notes = self.wr.get_book_notes(book_id)
                             social = None
@@ -366,7 +366,6 @@ class SyncManager:
                         self.ns.sync_book_notes(page_id, notes, social, book_title,
                                                  book_info, book_read_detail, progress_info,
                                                  book_id=book_id, start_date=start_date)
-                        self.state.setdefault("book_meta", {})[book_id]["content_written"] = True
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)
