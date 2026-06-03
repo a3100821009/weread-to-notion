@@ -331,7 +331,6 @@ class SyncManager:
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
                     if self.sync_highlights or self.sync_reviews:
-                        # 有笔记的书才进入笔记同步（保留无笔记书的既有内容不覆盖）
                         if nb_info:
                             notes = self.wr.get_book_notes(book_id)
                             social = None
@@ -339,12 +338,13 @@ class SyncManager:
                                 social = self.wr.get_book_social_notes(book_id)
                             except Exception:
                                 pass
-                            self.ns.sync_book_notes(page_id, notes, social, book_title,
-                                                     book_info, book_read_detail, progress_info,
-                                                     book_id=book_id, start_date=start_date)
                         else:
-                            # 无笔记的书仅更新书架条目（不写入笔记子页面，避免清空既有内容）
-                            pass
+                            # 无笔记的书使用空数据，sync_book_notes 仍会写入基础结构
+                            notes = {"highlights": [], "reviews": [], "chapters": {}}
+                            social = None
+                        self.ns.sync_book_notes(page_id, notes, social, book_title,
+                                                 book_info, book_read_detail, progress_info,
+                                                 book_id=book_id, start_date=start_date)
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)

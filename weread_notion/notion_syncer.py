@@ -431,9 +431,10 @@ class NotionSyncer:
                 book_reviews.append(rv)
 
         all_cuids = set(ch_my_hl.keys()) | set(ch_reviews.keys())
-        for cuid, s in social.items():
-            if s.get("highlights") or s.get("reviews"):
-                all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
+        if social:
+            for cuid, s in social.items():
+                if s.get("highlights") or s.get("reviews"):
+                    all_cuids.add(int(cuid) if isinstance(cuid, str) else cuid)
 
         # ── 保留用户填写的内容 ────────────────────────────────────────────
         user_intro = []
