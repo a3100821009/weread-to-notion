@@ -4,6 +4,7 @@ Notion 同步模块
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -125,6 +126,13 @@ class NotionSyncer:
     """
     SHELF_DB_TITLE = "📚 微信阅读书架"
 
+    # 跨线程 Notion 令牌桶：最多 3 个并发槽位，每个槽位执行后冷却 0.36s
+    # 有效速率 ≈ 3 req/s（Notion API 硬限制），避免 429
+    _n_tokens = threading.Semaphore(3)
+    _n_next_at = [0.0] * 3
+    _n_slot_lock = threading.Lock()
+    _n_round_robin = 0
+
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None):
         self.client = Client(auth=token)
         self.parent_page_id = parent_page_id
@@ -133,32 +141,49 @@ class NotionSyncer:
 
     def _n(self, fn, *args, **kwargs):
         """
-        Notion API 调用——15 线程并发请求，偶遇 429 自动重试。
-        不主动限流（实测并发极少触发 429），仅兜底重试。
+        Notion API 调用——令牌桶限流 + 429 重试。
+        - 每秒最多 3 次请求（Notion API 硬限制）
+        - 遇 429 指数退避重试（1s→2s→4s）
         """
-        attempt = 0
-        max_retries = 3
-        while True:
-            try:
-                return fn(*args, **kwargs)
-            except APIResponseError as e:
-                status = getattr(e, "status", 0) or getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0
-                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    delay = min(1.0 * (2 ** attempt), 60.0)
-                    attempt += 1
-                    logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
-                    time.sleep(delay)
-                    continue
-                raise
-            except requests.exceptions.HTTPError as e:
-                status = e.response.status_code if e.response is not None else 0
-                if status in (429, 500, 502, 503, 504) and attempt < max_retries:
-                    delay = min(1.0 * (2 ** attempt), 60.0)
-                    attempt += 1
-                    logger.warning(f"HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
-                    time.sleep(delay)
-                    continue
-                raise
+        # 获取令牌（槽位），最多 3 个并发
+        NotionSyncer._n_tokens.acquire()
+        try:
+            # 分配槽位并等待冷却
+            with NotionSyncer._n_slot_lock:
+                slot = NotionSyncer._n_round_robin
+                NotionSyncer._n_round_robin = (slot + 1) % 3
+                wait = max(0.0, NotionSyncer._n_next_at[slot] - time.time())
+            if wait > 0:
+                time.sleep(wait)
+
+            attempt = 0
+            max_retries = 3
+            while True:
+                try:
+                    return fn(*args, **kwargs)
+                except APIResponseError as e:
+                    status = getattr(e, "status", 0) or (getattr(e.response, "status_code", 0) if hasattr(e, "response") else 0)
+                    if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                        delay = min(1.0 * (2 ** attempt), 60.0)
+                        attempt += 1
+                        logger.warning(f"Notion HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                        time.sleep(delay)
+                        continue
+                    raise
+                except requests.exceptions.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else 0
+                    if status in (429, 500, 502, 503, 504) and attempt < max_retries:
+                        delay = min(1.0 * (2 ** attempt), 60.0)
+                        attempt += 1
+                        logger.warning(f"HTTP {status}, 重试 {attempt}/{max_retries} (等待 {delay:.0f}s)...")
+                        time.sleep(delay)
+                        continue
+                    raise
+        finally:
+            # 无论成功/失败，设置冷却时间
+            with NotionSyncer._n_slot_lock:
+                NotionSyncer._n_next_at[slot] = time.time() + 0.36
+            NotionSyncer._n_tokens.release()
 
     # ── 初始化结构 ──────────────────────────────────────────────────────────
 

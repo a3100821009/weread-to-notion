@@ -346,7 +346,9 @@ class SyncManager:
                 try:
                     page_id = self.ns.sync_book(book_info, progress_info, nb_info, book_shelf, book_read_detail)
 
-                    if self.sync_highlights or self.sync_reviews:
+                    # 如果该书的页面内容已经写入过，跳过 sync_book_notes 避免重复 Notion 调用
+                    already_written = self.state.get("book_meta", {}).get(book_id, {}).get("content_written", False)
+                    if not already_written and (self.sync_highlights or self.sync_reviews):
                         if nb_info:
                             notes = self.wr.get_book_notes(book_id)
                             social = None
@@ -361,6 +363,8 @@ class SyncManager:
                         self.ns.sync_book_notes(page_id, notes, social, book_title,
                                                  book_info, book_read_detail, progress_info,
                                                  book_id=book_id, start_date=start_date)
+                        # 标记内容已写入，后续增量跳过
+                        self.state.setdefault("book_meta", {})[book_id]["content_written"] = True
 
                     self.state[f"book_{book_id}"] = book_shelf.get("readUpdateTime", 0)
                     return (book_id, True, None)
