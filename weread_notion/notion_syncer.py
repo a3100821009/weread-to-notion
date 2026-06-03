@@ -570,6 +570,22 @@ class NotionSyncer:
                     book_total_sec = int(v)
                     break
 
+        # ── 开始日期（来自 progress_info / book_info）──
+        start_date = None
+        if progress_info and progress_info.get("book"):
+            p = progress_info["book"]
+            for fld in ["firstReadTime", "firstOpenTime", "createTime"]:
+                ft = p.get(fld, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
+        if not start_date and book_info:
+            for fld in ["createTime", "addTime", "create_time", "add_time"]:
+                ft = book_info.get(fld, 0)
+                if ft and ft > 0:
+                    start_date = datetime.fromtimestamp(ft).strftime("%Y-%m-%d")
+                    break
+
         note_count = len(highlights) + len(reviews)
 
         # ── 阅读进度 ───────────────────────────────
