@@ -4,7 +4,6 @@ Notion 同步模块
 """
 
 import logging
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -126,10 +125,6 @@ class NotionSyncer:
     """
     SHELF_DB_TITLE = "📚 微信阅读书架"
 
-    # 跨线程 Notion API 限流（≤3 req/s）
-    _n_lock = threading.Lock()
-    _n_last = 0.0
-
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None):
         self.client = Client(auth=token)
         self.parent_page_id = parent_page_id
@@ -138,18 +133,9 @@ class NotionSyncer:
 
     def _n(self, fn, *args, **kwargs):
         """
-        带限流的 Notion API 调用：
-        1. 全局锁确保单线程访问
-        2. 0.2s 间隔 ≈ 5 req/s（序列化后不会触发 429）
-        3. 429/5xx 自动重试（指数退避，最长等 60s）
+        Notion API 调用——15 线程并发请求，偶遇 429 自动重试。
+        不主动限流（实测并发极少触发 429），仅兜底重试。
         """
-        with NotionSyncer._n_lock:
-            now = time.time()
-            elapsed = now - NotionSyncer._n_last
-            if elapsed < 0.2:
-                time.sleep(0.35 - elapsed)
-            NotionSyncer._n_last = time.time()
-
         attempt = 0
         max_retries = 3
         while True:
