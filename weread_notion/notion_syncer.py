@@ -130,20 +130,24 @@ class NotionSyncer:
     _n_last = 0.0
 
     def __init__(self, token: str, parent_page_id: str, book_pages: Optional[dict] = None):
-        self.client = Client(auth=token, retry_on_429=True)
+        self.client = Client(auth=token)
         self.parent_page_id = parent_page_id
         self._shelf_db_id: Optional[str] = None
         self._book_pages: dict = book_pages or {}
 
     def _n(self, fn, *args, **kwargs):
-        """带限流的 Notion API 调用——全局锁确保 ≤3 req/s"""
+        """带限流的 Notion API 调用——全局锁确保 ≤3 req/s，自动重试 429/5xx"""
         with NotionSyncer._n_lock:
             now = time.time()
             elapsed = now - NotionSyncer._n_last
             if elapsed < 0.35:
                 time.sleep(0.35 - elapsed)
             NotionSyncer._n_last = time.time()
-        return fn(*args, **kwargs)
+
+        def _call():
+            return fn(*args, **kwargs)
+        return retry_on_failure(_call, max_retries=2, base_delay=1.0,
+                                status_forcelist=(429, 500, 502, 503, 504))
 
     # ── 初始化结构 ──────────────────────────────────────────────────────────
 
